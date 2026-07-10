@@ -12,6 +12,23 @@ Two front ends share the same capture/parsing engine (`monitor.py`):
 - **`monitor.py`** — terminal UI (CLI), built on [rich](https://github.com/Textualize/rich).
 - **`monitor_gui.py`** — desktop UI (GUI), built on Tkinter (Python standard library).
 
+## Screenshots
+
+**CLI** — real output, rendered directly from `monitor.py`'s own display code
+against a real capture (`--pcap` with `--goose --sv --rgoose --ptp` to show
+every detailed row):
+
+![CLI screenshot](docs/screenshots/cli-screenshot.svg)
+
+**GUI** — a recreation matching the real widget layout exactly (interface
+picker, link speed/duration, Start/Stop, the four protocol-detail checkboxes,
+Open pcap/pcapng, and the results table/status bar). This is not a live
+capture — a real Windows desktop wasn't available to screenshot in the
+environment this was built in — but every label, column and control matches
+`monitor_gui.py`'s actual layout one-for-one:
+
+![GUI layout](docs/screenshots/gui-screenshot.png)
+
 ## File integrity
 
 SHA256 of each source file and its corresponding compiled Windows binary, so
