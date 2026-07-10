@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment — machine-specific, never committed
+venv/
+
+# PyInstaller build artifacts — regenerable, not distributed via this repo.
+# Compiled binaries are published as GitHub Releases instead of committing
+# them into the main tree.
+build/
+dist/
+
+# Personal/local Claude Code settings (machine-specific permissions)
+.claude/settings.local.json
+
+# Debug/scratch script, not part of the shipped product
+debug_rgoose.py
