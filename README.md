@@ -7,6 +7,11 @@ file) and classifies traffic by protocol, VLAN, and redundancy scheme
 Version 0.0.2 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
 dependency; see [THIRD_PARTY_LICENSES](#third-party-licenses) below).
 
+Developed by [Fabio Barros](https://github.com/floko808) with
+[Claude](https://claude.com/claude-code) (Anthropic) as an AI coding
+collaborator — see individual commits for the `Co-Authored-By: Claude`
+attribution on Claude-assisted work.
+
 Two front ends share the same capture/parsing engine (`monitor.py`):
 
 - **`monitor.py`** — terminal UI (CLI), built on [rich](https://github.com/Textualize/rich).
