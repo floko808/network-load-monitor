@@ -4,7 +4,7 @@ Captures raw Ethernet frames on a network interface (or reads a `.pcap`/`.pcapng
 file) and classifies traffic by protocol, VLAN, and redundancy scheme
 (HSR/PRP), reporting throughput and link-load percentage per protocol.
 
-Version 0.0.1 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
+Version 0.0.2 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
 dependency; see [THIRD_PARTY_LICENSES](#third-party-licenses) below).
 
 Two front ends share the same capture/parsing engine (`monitor.py`):
@@ -15,13 +15,14 @@ Two front ends share the same capture/parsing engine (`monitor.py`):
 ## Screenshots
 
 **CLI** — real output, rendered directly from `monitor.py`'s own display code
-against a real capture (`--pcap` with `--goose --sv --rgoose --ptp` to show
-every detailed row):
+against a real capture (`--pcap --goose --sv --rgoose --ptp` — this capture
+carries no MMS/DNP3/IEC104/Modbus TCP traffic, so those detailed rows aren't
+pictured; pass `--all` to break out every protocol a capture actually has):
 
 ![CLI screenshot](docs/screenshots/cli-screenshot.svg)
 
 **GUI** — a recreation matching the real widget layout exactly (interface
-picker, link speed/duration, Start/Stop, the four protocol-detail checkboxes,
+picker, link speed/duration, Start/Stop, the protocol-detail checkboxes,
 Open pcap/pcapng, and the results table/status bar). This is not a live
 capture — a real Windows desktop wasn't available to screenshot in the
 environment this was built in — but every label, column and control matches
@@ -38,10 +39,10 @@ you can confirm a copy hasn't been altered in transit. Recompute with
 
 | File | Version | SHA256 |
 |---|---|---|
-| `monitor.py` | 0.0.1 | `e7526d6351062c0552ba7eea161e5698111a43036716cbc1f4ede543b8667435` |
-| `monitor_gui.py` | 0.0.1 | `5d8b1b1a065f018a71f01ba41d73f3016edcb8b6d6f6151652c448be5cb8c302` |
-| `network-monitor.exe` | 0.0.1 | `e42a48bb2879895abceb7d414ee2d26e11c751a9c201da969a03a53d4dc4a7f3` |
-| `network-monitor-gui.exe` | 0.0.1 | `d18e0e2d3cecba8461c8739722d7a9fe182f0802757e1037014d7663cb821c75` |
+| `monitor.py` | 0.0.2 | `8e8af8ed488698862a9e98d2329013fe818a66dc669a50ef4e3a22ad6f829cff` |
+| `monitor_gui.py` | 0.0.2 | `69947c51ec1958d5f7a5820f4d04d4af4e08a09f35eef93c703340d525a5a2b5` |
+| `network-monitor.exe` | 0.0.2 | `a1096432290a6dc6ddcbc07f562180e3a481afe4127dc905a95e08953c2c58a5` |
+| `network-monitor-gui.exe` | 0.0.2 | `e1236b95946e649ba09ea248ce95e40f8e7c79958abe79eb8513b54a42da9052` |
 
 > These hashes must be regenerated any time the corresponding file changes —
 > they are not automatically kept in sync.
@@ -54,16 +55,27 @@ Protocols with their own detailed row (off by default — see below):
 | Sampled Values (SV) | EtherType `0x88BA` |
 | R-GOOSE | UDP multicast (IEC 61850-8-2) |
 | PTP / IEEE 1588 | EtherType `0x88F7` |
+| MMS | TCP port `102` + TPKT header verification (unicast, IEC 61850-8-1) |
+| DNP3 | TCP/UDP port `20000` + data-link sync-byte verification (unicast) |
+| IEC104 | TCP port `2404` + APCI start-byte verification — IEC 60870-5-104 (unicast) |
+| Modbus TCP | TCP port `502` + MBAP header verification (unicast) |
 
-By default all four are folded into a single "Other" line — pass
-`--goose`/`--sv`/`--rgoose`/`--ptp` (CLI) or tick the matching checkbox (GUI)
-to break any of them out into their own detailed rows (VLAN, CoS, AppID,
-SVID/GOID, noASDU/stNum, confRev, Sim).
+For these four, the well-known port is only a hint — a matching port with a
+payload that doesn't parse as that protocol's actual framing (TPKT magic
+bytes, DNP3 sync bytes, IEC104 APCI start byte, or Modbus MBAP header) is
+left classified as "IPv4"/"Other" rather than assumed to be that protocol.
 
-Everything else — R-SV, GSSE (legacy), MMS (TCP port 102), NTP (UDP port
-123), LLDP, RSTP, ARP, IPv4, IPv6, and any unclassified traffic — is still
-recognized internally but always aggregated into that "Other" row; there's
-no per-protocol breakdown for it.
+By default all eight are folded into a single "Other" line — pass
+`--goose`/`--sv`/`--rgoose`/`--ptp`/`--mms`/`--dnp3`/`--iec104`/`--modbus`
+(CLI) or tick the matching checkbox (GUI) to break any of them out into
+their own detailed rows (VLAN, CoS, AppID, SVID/GOID, noASDU/stNum, confRev,
+Sim — the AppID/SVID/GOID-style columns only ever populate for GOOSE/SV/
+R-GOOSE; the unicast protocols show '-' there).
+
+Everything else — R-SV, GSSE (legacy), NTP (UDP port 123), LLDP, RSTP, ARP,
+IPv4, IPv6, and any unclassified traffic — is still recognized internally
+but always aggregated into that "Other" row; there's no per-protocol
+breakdown for it.
 
 HSR / PRP redundancy (in-frame tag `0x892F` / RCT trailer `0x88FB`) is
 detected and shown as its own column regardless of which protocol flags are set.
@@ -100,9 +112,9 @@ bundled into a single executable.
    - Pick a **network interface** from the dropdown.
    - Set **link speed** (Mb/s) and **duration** (`0` = run forever).
    - Click **▶ Start** / **■ Stop**.
-   - Tick the **Detail** checkboxes (GOOSE / Sampled Values / R-GOOSE / PTP)
-     to break any of them out of the "Other" row — this can be toggled at
-     any time, even mid-capture.
+   - Tick the **Detail** checkboxes (GOOSE / Sampled Values / R-GOOSE / PTP /
+     MMS / DNP3 / IEC104 / Modbus TCP) to break any of them out of the
+     "Other" row — this can be toggled at any time, even mid-capture.
    - **Open pcap/pcapng...** loads a capture file from disk instead of
      capturing live (a progress readout appears in the status bar while a
      large file loads — this can take tens of seconds for very large files).
@@ -193,6 +205,7 @@ python3 monitor_gui.py
 ```
 usage: monitor.py [-h] [-d SEC] [-s MBPS] [-r SEC] [-l] [-V] [--pcap FILE]
                    [--goose] [--sv] [--rgoose] [--ptp]
+                   [--mms] [--dnp3] [--iec104] [--modbus] [--all]
                    [interface]
 
 positional arguments:
@@ -211,6 +224,12 @@ options:
   --sv                Show detailed Sampled Values breakdown (off by default)
   --rgoose            Show detailed R-GOOSE breakdown (off by default)
   --ptp               Show detailed PTP breakdown (off by default)
+  --mms               Show detailed MMS breakdown (off by default; TCP port 102)
+  --dnp3              Show detailed DNP3 breakdown (off by default; TCP/UDP port 20000)
+  --iec104            Show detailed IEC104 breakdown (off by default; IEC 60870-5-104, TCP port 2404)
+  --modbus            Show detailed Modbus TCP breakdown (off by default; TCP port 502)
+  --all               Show detailed breakdown for every supported protocol
+                       (equivalent to --goose --sv --rgoose --ptp --mms --dnp3 --iec104 --modbus)
 ```
 
 Examples:
@@ -222,6 +241,8 @@ python3 monitor.py eth1 -s 1000 -d 0      # 1 Gb/s link, run forever
 python3 monitor.py eth0 -r 2 -d 60        # 2 s statistics window, 60 s capture
 python3 monitor.py --list                 # show available interfaces
 python3 monitor.py eth0 --goose --sv      # break out GOOSE and SV detail
+python3 monitor.py eth0 --mms --dnp3 --iec104 --modbus  # unicast SCADA/substation protocols
+python3 monitor.py eth0 --all             # break out every supported protocol
 python3 monitor.py --pcap capture.pcapng --goose --ptp
 ```
 

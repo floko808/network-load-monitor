@@ -256,7 +256,7 @@ class MonitorApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(f"{SOFTWARE_NAME} v{__version__}")
-        root.geometry("1280x540")
+        root.geometry("1480x540")
 
         self._lock         = threading.Lock()
         self._cur: dict    = defaultdict(lambda: defaultdict(int))

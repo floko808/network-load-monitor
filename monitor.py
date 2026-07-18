@@ -7,12 +7,16 @@ traffic by protocol, VLAN, and redundancy scheme (HSR/PRP).
 
 Supported protocols
   Detailed rows     : GOOSE (0x88B8), Sampled Values (0x88BA), PTP/IEEE-1588
-                      (0x88F7), R-GOOSE (UDP multicast) — off by default,
-                      see --goose/--sv/--rgoose/--ptp
+                      (0x88F7), R-GOOSE (UDP multicast), MMS (TCP/102),
+                      DNP3 (TCP or UDP/20000), IEC104 (IEC 60870-5-104,
+                      TCP/2404), Modbus TCP (TCP/502) — all unicast-only
+                      protocols identified by well-known port — off by
+                      default, see --goose/--sv/--rgoose/--ptp/--mms/--dnp3/
+                      --iec104/--modbus
   Redundancy        : HSR – IEC 62439-3 (EtherType 0x892F in-frame tag)
                       PRP – IEC 62439-3 (RCT trailer, last 2 bytes 0x88FB)
   VLAN              : IEEE 802.1Q (0x8100), QinQ (0x88A8)
-  Other (aggregated): GSSE, MMS, NTP, R-SV, LLDP, RSTP, ARP, IPv4, IPv6,
+  Other (aggregated): GSSE, NTP, R-SV, LLDP, RSTP, ARP, IPv4, IPv6,
                       unclassified
 
 Load percentage is calculated against a configurable link speed
@@ -107,7 +111,7 @@ def _resolve_iface(name: str, mapping: Dict[str, str]) -> Optional[str]:
 
 # ── about / version ───────────────────────────────────────────────────────────
 SOFTWARE_NAME = "IEC 61850 Network Load Monitor"
-__version__   = "0.0.1"
+__version__   = "0.0.2"
 LICENSE_NAME  = "GPL-2.0-only"
 
 
@@ -125,6 +129,13 @@ ET_ARP   = 0x0806
 ET_LLDP  = 0x88CC
 PRP_SUF  = 0x88FB   # PRP Redundancy Control Trailer suffix
 
+# Unicast TCP/UDP protocol ports (identified by well-known port number, not
+# EtherType — these ride over ordinary IPv4 unicast, unlike GOOSE/SV/R-GOOSE).
+PORT_MMS      = 102     # ISO/COTP-encapsulated MMS (RFC 1006) — IEC 61850-8-1
+PORT_MODBUS   = 502     # Modbus TCP
+PORT_IEC104   = 2404    # IEC 60870-5-104 (displayed as "IEC104")
+PORT_DNP3     = 20000   # DNP3, TCP or UDP
+
 # Direct EtherType → protocol name mapping (Layer-2 only)
 L2_PROTO: Dict[int, str] = {
     ET_GOOSE: "GOOSE",
@@ -138,9 +149,15 @@ L2_PROTO: Dict[int, str] = {
 # Protocols that CAN be shown individually in the table; all others (and any of
 # these not currently enabled — see --goose/--sv/--rgoose/--ptp) are aggregated
 # as "Other". Fixed display order for the detailed rows.
-FEATURED_PROTOS: frozenset = frozenset({"GOOSE", "Sampled Values", "R-GOOSE", "PTP"})
-PROTO_ORDER: List[str] = ["GOOSE", "Sampled Values", "R-GOOSE", "PTP"]
-DISPLAY_ORDER: List[str] = ["GOOSE", "Sampled Values", "R-GOOSE", "PTP", "Other"]
+FEATURED_PROTOS: frozenset = frozenset({
+    "GOOSE", "Sampled Values", "R-GOOSE", "PTP", "MMS", "DNP3", "IEC104", "Modbus TCP",
+})
+PROTO_ORDER: List[str] = [
+    "GOOSE", "Sampled Values", "R-GOOSE", "PTP", "MMS", "DNP3", "IEC104", "Modbus TCP",
+]
+DISPLAY_ORDER: List[str] = [
+    "GOOSE", "Sampled Values", "R-GOOSE", "PTP", "MMS", "DNP3", "IEC104", "Modbus TCP", "Other",
+]
 
 # Default link speed
 LINK_MBPS: int    = 100
@@ -369,11 +386,55 @@ def parse_frame(data: bytes) -> Tuple[str, str, str, str, str, str, str, str, st
     return proto, vlan_label, cos_label, redund or "-", sv_appid, sv_svid, sv_noasdu, sv_confrev, sv_sim
 
 
+def _looks_like_mms(payload: bytes) -> bool:
+    """Verify TPKT (RFC 1006) framing atop the ISO/COTP session that carries
+    MMS: version byte 0x03, reserved byte 0x00, and a length field that's at
+    least the 4-byte TPKT header itself. A port match alone (102) isn't
+    enough — anything could be listening there."""
+    if len(payload) < 4:
+        return False
+    return payload[0] == 0x03 and payload[1] == 0x00 and _u16(payload, 2) >= 4
+
+
+def _looks_like_iec104(payload: bytes) -> bool:
+    """Verify the IEC 60870-5-104 APCI start byte (0x68) and an APDU length
+    field within the protocol's valid range (4-253 per IEC 60870-5-104)."""
+    if len(payload) < 2:
+        return False
+    return payload[0] == 0x68 and 4 <= payload[1] <= 253
+
+
+def _looks_like_modbus(payload: bytes) -> bool:
+    """Verify the Modbus MBAP header: protocol identifier must be 0x0000,
+    the length field must be plausible, and a (non-zero) function code must
+    follow it."""
+    if len(payload) < 8:
+        return False
+    protocol_id = _u16(payload, 2)
+    length      = _u16(payload, 4)
+    func_code   = payload[7]
+    return protocol_id == 0 and 2 <= length <= 253 and func_code != 0
+
+
+def _looks_like_dnp3(payload: bytes) -> bool:
+    """Verify the DNP3 data-link layer start bytes (0x05 0x64) and a
+    plausible length field (>= 5, the minimum header-only frame)."""
+    if len(payload) < 3:
+        return False
+    return payload[0] == 0x05 and payload[1] == 0x64 and payload[2] >= 5
+
+
 def _classify_ipv4(data: bytes, ip_off: int) -> Tuple[str, int]:
     """
-    Identify MMS, NTP, R-GOOSE, R-SV inside an IPv4 packet.
-    Returns (protocol_name, udp_payload_offset).
+    Identify MMS, DNP3, IEC104, Modbus TCP, NTP, R-GOOSE, R-SV inside an
+    IPv4 packet. Returns (protocol_name, udp_payload_offset).
     udp_payload_offset is the byte offset to the UDP payload; -1 otherwise.
+
+    MMS/DNP3/IEC104/Modbus TCP are unicast protocols with no dedicated
+    EtherType, so a well-known port is only a hint — it's confirmed against
+    each protocol's actual framing signature (TPKT magic, APCI start byte,
+    MBAP header, or DNP3 sync bytes) before being classified, rather than
+    trusting the port number alone.
     """
     if ip_off + 20 > len(data):
         return "IPv4", -1
@@ -391,14 +452,30 @@ def _classify_ipv4(data: bytes, ip_off: int) -> Tuple[str, int]:
     if ip_proto == 6 and t_off + 4 <= len(data):           # TCP
         sport = _u16(data, t_off)
         dport = _u16(data, t_off + 2)
-        if 102 in (sport, dport):
-            return "MMS", -1    # ISO/COTP-encapsulated MMS (RFC 1006)
+
+        payload = b""
+        if t_off + 13 <= len(data):
+            doff = (data[t_off + 12] >> 4) & 0xF   # TCP data offset, in words
+            if doff >= 5:                          # 5 words = 20-byte minimum TCP header
+                tcp_payload_off = t_off + doff * 4
+                payload = data[tcp_payload_off:]
+
+        if PORT_MMS in (sport, dport) and _looks_like_mms(payload):
+            return "MMS", -1       # ISO/COTP-encapsulated MMS (RFC 1006)
+        if PORT_IEC104 in (sport, dport) and _looks_like_iec104(payload):
+            return "IEC104", -1    # IEC 60870-5-104
+        if PORT_MODBUS in (sport, dport) and _looks_like_modbus(payload):
+            return "Modbus TCP", -1
+        if PORT_DNP3 in (sport, dport) and _looks_like_dnp3(payload):
+            return "DNP3", -1
 
     elif ip_proto == 17 and t_off + 4 <= len(data):        # UDP
         sport = _u16(data, t_off)
         dport = _u16(data, t_off + 2)
         if 123 in (sport, dport):
             return "NTP", -1    # Network Time Protocol (RFC 5905)
+        if PORT_DNP3 in (sport, dport) and _looks_like_dnp3(data[t_off + 8:]):
+            return "DNP3", -1   # DNP3 over UDP (uncommon, but valid per spec)
 
         multicast = (dst1 & 0xF0) == 0xE0  # 224.0.0.0/4
         if multicast:
@@ -892,14 +969,18 @@ def main() -> None:
                     f"(License: {LICENSE_NAME})",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-PROTOCOLS WITH DETAILED BREAKDOWN (off by default — see --goose/--sv/--rgoose/--ptp)
+PROTOCOLS WITH DETAILED BREAKDOWN (off by default — see --goose/--sv/--rgoose/--ptp/--mms/--dnp3/--iec104/--modbus)
   GOOSE          EtherType 0x88B8  – Generic Object Oriented Substation Event
   Sampled Values EtherType 0x88BA  – Process-bus current/voltage samples
   R-GOOSE        UDP multicast     – Routable GOOSE (IEC 61850-8-2)
   PTP            EtherType 0x88F7  – IEEE 1588 Precision Time Protocol
+  MMS            TCP port 102      – Manufacturing Message Spec (IEC 61850-8-1), unicast
+  DNP3           TCP/UDP port 20000 – Distributed Network Protocol 3, unicast
+  IEC104         TCP port 2404     – IEC 60870-5-104, unicast
+  Modbus TCP     TCP port 502      – Modbus over TCP, unicast
 
 EVERYTHING ELSE — always aggregated into a single "Other" row
-  R-SV, GSSE, MMS, NTP, LLDP, RSTP, ARP, IPv4, IPv6, and any unclassified
+  R-SV, GSSE, NTP, LLDP, RSTP, ARP, IPv4, IPv6, and any unclassified
   traffic are still recognized internally but have no per-protocol row;
   they only ever contribute to "Other"'s combined rate.
 
@@ -910,8 +991,9 @@ REDUNDANCY DETECTION
                  LanId nibble 0xA = LAN A, 0xB = LAN B
 
 TABLE COLUMNS
-  Protocol     Classified protocol name (GOOSE/SV/R-GOOSE/PTP individually
-               when enabled; all others summarised as "Other")
+  Protocol     Classified protocol name (GOOSE/SV/R-GOOSE/PTP/MMS/DNP3/
+               IEC104/Modbus TCP individually when enabled; all others
+               summarised as "Other")
   VLAN         802.1Q / QinQ VLAN id(s), or '-'
   CoS          IEEE 802.1Q PCP (Priority Code Point) value, or '-'
   Redundancy   HSR-A/B or PRP-A/B if detected, else '-'
@@ -938,6 +1020,8 @@ EXAMPLES
   python3 monitor.py eth0 -r 2 -d 60       # 2 s window, 60 s capture
   python3 monitor.py --list                 # show available interfaces
   python3 monitor.py eth0 --goose --sv      # break out GOOSE and SV detail
+  python3 monitor.py eth0 --mms --dnp3 --iec104 --modbus  # unicast SCADA/substation protocols
+  python3 monitor.py eth0 --all             # break out every supported protocol
   python3 monitor.py --pcap capture.pcapng --goose --ptp
 """,
     )
@@ -987,14 +1071,40 @@ EXAMPLES
         "--ptp", action="store_true",
         help="Show detailed PTP breakdown (off by default)",
     )
+    parser.add_argument(
+        "--mms", action="store_true",
+        help="Show detailed MMS breakdown (off by default; TCP port 102)",
+    )
+    parser.add_argument(
+        "--dnp3", action="store_true",
+        help="Show detailed DNP3 breakdown (off by default; TCP/UDP port 20000)",
+    )
+    parser.add_argument(
+        "--iec104", action="store_true",
+        help="Show detailed IEC104 breakdown (off by default; IEC 60870-5-104, "
+             "TCP port 2404)",
+    )
+    parser.add_argument(
+        "--modbus", action="store_true",
+        help="Show detailed Modbus TCP breakdown (off by default; TCP port 502)",
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Show detailed breakdown for every supported protocol "
+             "(equivalent to --goose --sv --rgoose --ptp --mms --dnp3 --iec104 --modbus)",
+    )
     args = parser.parse_args()
 
-    enabled_protos: frozenset = frozenset(
+    enabled_protos: frozenset = FEATURED_PROTOS if args.all else frozenset(
         name for name, flag in (
             ("GOOSE", args.goose),
             ("Sampled Values", args.sv),
             ("R-GOOSE", args.rgoose),
             ("PTP", args.ptp),
+            ("MMS", args.mms),
+            ("DNP3", args.dnp3),
+            ("IEC104", args.iec104),
+            ("Modbus TCP", args.modbus),
         ) if flag
     )
 
