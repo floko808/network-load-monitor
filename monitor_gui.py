@@ -205,6 +205,49 @@ class _CaptureEngine:
                 pass
 
 
+# ── pcap load progress dialog ───────────────────────────────────────────────
+
+class _PcapLoadDialog:
+    """Small modal window shown while an offline pcap/pcapng file is being
+    parsed, mirroring the CLI's --pcap progress bar."""
+
+    def __init__(self, root: tk.Tk, filename: str) -> None:
+        self._win = tk.Toplevel(root)
+        self._win.title("Loading capture")
+        self._win.resizable(False, False)
+        self._win.transient(root)
+        self._win.protocol("WM_DELETE_WINDOW", lambda: None)  # no close while loading
+
+        pad = ttk.Frame(self._win, padding=16)
+        pad.pack(fill="both", expand=True)
+
+        ttk.Label(pad, text=f"Loading {filename} …").pack(anchor="w")
+
+        self._bar = ttk.Progressbar(
+            pad, orient="horizontal", length=360, mode="determinate", maximum=100,
+        )
+        self._bar.pack(fill="x", pady=(10, 4))
+
+        self._detail_var = tk.StringVar(value="0.0%   0 packets  (0.0 B)")
+        ttk.Label(pad, textvariable=self._detail_var).pack(anchor="w")
+
+        self._win.update_idletasks()
+        x = root.winfo_rootx() + (root.winfo_width() - self._win.winfo_reqwidth()) // 2
+        y = root.winfo_rooty() + (root.winfo_height() - self._win.winfo_reqheight()) // 2
+        self._win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        self._win.grab_set()
+
+    def update(self, pkts: int, total_bytes: int, percent: float) -> None:
+        self._bar["value"] = percent
+        self._detail_var.set(
+            f"{percent:.1f}%   {pkts:,} packets  ({_fmt_bytes(float(total_bytes))})"
+        )
+
+    def close(self) -> None:
+        self._win.grab_release()
+        self._win.destroy()
+
+
 # ── application ───────────────────────────────────────────────────────────────
 
 class MonitorApp:
@@ -440,10 +483,13 @@ class MonitorApp:
         self._btn_start.config(state="disabled")
 
         base = os.path.basename(path)
+        dialog = _PcapLoadDialog(self.root, base)
 
-        def on_progress(pkts: int, total_bytes: int) -> None:
+        def on_progress(pkts: int, total_bytes: int, percent: float) -> None:
+            self.root.after(0, lambda: dialog.update(pkts, total_bytes, percent))
             self.root.after(0, lambda: self._status.set(
-                f"Loading {base}…  {pkts:,} packets  ({_fmt_bytes(float(total_bytes))})"
+                f"Loading {base}…  {percent:.1f}%  {pkts:,} packets  "
+                f"({_fmt_bytes(float(total_bytes))})"
             ))
 
         def worker() -> None:
@@ -454,12 +500,14 @@ class MonitorApp:
                 stats = duration = pkts = total_bytes = None
                 error = exc
             self.root.after(
-                0, lambda: self._on_pcap_loaded(path, stats, duration, pkts, total_bytes, error)
+                0,
+                lambda: self._on_pcap_loaded(path, stats, duration, pkts, total_bytes, error, dialog),
             )
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_pcap_loaded(self, path, stats, duration, pkts, total_bytes, error) -> None:
+    def _on_pcap_loaded(self, path, stats, duration, pkts, total_bytes, error, dialog) -> None:
+        dialog.close()
         self._btn_start.config(state="normal")
         if error is not None:
             self._status.set("Ready.")

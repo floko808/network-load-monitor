@@ -257,3 +257,17 @@ distributes `scapy`, which is GPL-2.0-only. Other bundled runtime
 dependencies (`rich`, `markdown-it-py`, `mdurl`, `Pygments`, the Python
 standard library, and PyInstaller's bootloader for the compiled `.exe`s) are
 all permissively licensed and impose no additional restriction.
+
+| Library | License | Direct / transitive | Used for |
+|---|---|---|---|
+| [scapy](https://scapy.net) | GPL-2.0-only | Direct (`requirements.txt`) | Packet capture and protocol parsing |
+| [rich](https://github.com/Textualize/rich) | MIT | Direct (`requirements.txt`) | CLI table/panel/progress-bar rendering |
+| [Pygments](https://pygments.org) | BSD-2-Clause | Transitive (via `rich`) | Syntax highlighting support |
+| [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | MIT | Transitive (via `rich`) | Markdown rendering support |
+| [mdurl](https://github.com/executablebooks/mdurl) | MIT | Transitive (via `markdown-it-py`) | Markdown URL utilities |
+| Python standard library | PSF License | Built-in | `argparse`, `tkinter`, `socket`, etc. |
+| [PyInstaller](https://pyinstaller.org) bootloader | GPL-2.0-or-later, bootloader exception | Build-only | Packaging into standalone `.exe`/binaries |
+
+`pip show <package>` against the project's `venv` is the source of truth for
+exact versions and licenses in use; re-check it after bumping
+`requirements.txt`.

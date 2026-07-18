@@ -52,6 +52,7 @@ try:
     from rich.console import Console
     from rich.live import Live
     from rich.panel import Panel
+    from rich.progress import BarColumn, Progress, TextColumn
     from rich.table import Table
     from rich.text import Text
     from rich import box
@@ -704,7 +705,7 @@ _PCAP_PROGRESS_EVERY = 2000   # packets between progress_cb calls
 
 
 def load_pcap_stats(
-    path: str, progress_cb: Optional[Callable[[int, int], None]] = None,
+    path: str, progress_cb: Optional[Callable[[int, int, float], None]] = None,
 ) -> Tuple[StatsMap, float, int, int]:
     """Read every frame from a pcap or pcapng file and classify it exactly like
     a live capture would. Returns (stats, duration_s, packet_count, byte_count),
@@ -713,13 +714,16 @@ def load_pcap_stats(
 
     scapy's PcapReader builds a full Packet object per frame, so large files
     take a while (tens of seconds for 100k+ packets); progress_cb(pkts,
-    total_bytes), if given, is called every _PCAP_PROGRESS_EVERY packets so a
-    caller can show the load is actually progressing.
+    total_bytes, percent), if given, is called every _PCAP_PROGRESS_EVERY
+    packets (and once more at 100% when done) so a caller can show the load
+    is actually progressing. percent is based on the reader's position in the
+    file on disk, not on decoded packet bytes.
     """
     stats: StatsMap = defaultdict(lambda: defaultdict(int))
     pkts = total_bytes = 0
     t_min: Optional[float] = None
     t_max: Optional[float] = None
+    file_size = os.path.getsize(path)
 
     with PcapReader(path) as reader:
         for pkt in reader:
@@ -735,7 +739,11 @@ def load_pcap_stats(
             if t_max is None or ts > t_max:
                 t_max = ts
             if progress_cb is not None and pkts % _PCAP_PROGRESS_EVERY == 0:
-                progress_cb(pkts, total_bytes)
+                percent = min(reader.f.tell() / file_size * 100, 100.0) if file_size else 100.0
+                progress_cb(pkts, total_bytes, percent)
+
+    if progress_cb is not None:
+        progress_cb(pkts, total_bytes, 100.0)
 
     duration = max((t_max - t_min) if t_min is not None else 0.0, 0.001)
     return {p: dict(k) for p, k in stats.items()}, duration, pkts, total_bytes
@@ -1003,8 +1011,24 @@ EXAMPLES
     LINK_BYTES_S = LINK_MBPS * 1_000_000 / 8
 
     if args.pcap:
+        base = os.path.basename(args.pcap)
         try:
-            stats, duration, pkts, total_bytes = load_pcap_stats(args.pcap)
+            with Progress(
+                TextColumn("[bold]Loading {task.fields[name]}[/bold]"),
+                BarColumn(),
+                TextColumn("{task.percentage:>5.1f}%"),
+                TextColumn("{task.fields[detail]}"),
+                console=console, transient=True,
+            ) as progress:
+                task_id = progress.add_task("load", total=100.0, name=base, detail="")
+
+                def _on_progress(pkts: int, total_bytes: int, percent: float) -> None:
+                    progress.update(
+                        task_id, completed=percent,
+                        detail=f"{pkts:,} packets ({_fmt_bytes(float(total_bytes))})",
+                    )
+
+                stats, duration, pkts, total_bytes = load_pcap_stats(args.pcap, _on_progress)
         except Exception as exc:
             console.print(f"[bold red]Error:[/bold red] failed to read {args.pcap}: {exc}")
             sys.exit(1)
