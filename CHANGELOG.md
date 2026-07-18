@@ -60,12 +60,6 @@ fixes.
   `network-monitor-gui.exe`, alongside running from source on Linux.
 - CLI and GUI screenshots added to the README.
 
+[Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/floko808/network-load-monitor/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/floko808/network-load-monitor/releases/tag/v0.0.1
-
-<!--
-0.0.2 has no tag/compare link yet — the commits exist locally but aren't
-pushed to origin and v0.0.1 is the only tag currently on the remote. Add
-[Unreleased] and [0.0.2] compare links once v0.0.2 is tagged and pushed:
-  [Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.2...HEAD
-  [0.0.2]: https://github.com/floko808/network-load-monitor/compare/v0.0.1...v0.0.2
--->
