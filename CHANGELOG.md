@@ -9,6 +9,38 @@ fixes.
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-07-20
+
+### Fixed
+- MMS/DNP3/IEC104/Modbus TCP rows disappearing between bursts. These
+  protocols are unicast and often bursty (e.g. an MMS report control
+  block's integrity period) rather than continuous like GOOSE/SV, so a
+  protocol could go quiet for many refresh windows between exchanges and
+  its row would simply vanish — easy to mistake for "not detected" even
+  though it was captured moments earlier. A protocol's row now stays
+  visible (bits/s reset to 0, labeled `idle Ns`) until its next exchange
+  refreshes it, in both CLI and GUI.
+- A race in the `dumpcap` capture backend (CLI and GUI) where stopping a
+  capture could silently discard the last in-flight batch of packets.
+  `dumpcap` buffers its output before writing to the pipe, so a burst
+  captured seconds ago may still be flushed-but-unread when the capture is
+  told to stop; the reader now drains everything still in flight before
+  reporting the capture as stopped, instead of abandoning it mid-read.
+- Live captures had no way to answer "how much MMS (or any bursty
+  protocol) traffic did this run actually have" — the live view only ever
+  showed the current rolling window's rate, which could easily be 0 at the
+  exact moment the capture ended even though real traffic occurred earlier
+  in the run. A session-wide cumulative total is now tracked throughout
+  the capture and shown once it stops: the CLI prints an additional
+  "session total" summary panel, and the GUI's table settles on the
+  session totals after Stop (waiting for the backend to finish draining
+  first, for the same buffering reason as above).
+
+### Changed
+- README and CLI `--help` now note that MMS/DNP3/IEC104/Modbus are bursty
+  rather than continuous, and recommend a longer `--duration` (or `0` to
+  run until stopped) so a capture reliably spans at least one full cycle.
+
 ## [0.0.2] - 2026-07-18
 
 ### Added
@@ -60,6 +92,7 @@ fixes.
   `network-monitor-gui.exe`, alongside running from source on Linux.
 - CLI and GUI screenshots added to the README.
 
-[Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/floko808/network-load-monitor/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/floko808/network-load-monitor/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/floko808/network-load-monitor/releases/tag/v0.0.1

@@ -111,7 +111,7 @@ def _resolve_iface(name: str, mapping: Dict[str, str]) -> Optional[str]:
 
 # ── about / version ───────────────────────────────────────────────────────────
 SOFTWARE_NAME = "IEC 61850 Network Load Monitor"
-__version__   = "0.0.2"
+__version__   = "0.0.3"
 LICENSE_NAME  = "GPL-2.0-only"
 
 
@@ -612,7 +612,8 @@ def _flush_batch(local_cur: dict, local_protos: set,
     with _lock:
         for proto, keys in local_cur.items():
             for key, sz in keys.items():
-                _cur[proto][key] += sz
+                _cur[proto][key]           += sz
+                _session_stats[proto][key] += sz
         _session_protos.update(local_protos)
         _total_packets += pkts
         _total_bytes   += total_bytes
@@ -699,8 +700,6 @@ class _DumpcapCapture:
             last_flush  = time.monotonic()
             try:
                 for data in _iter_pcap(self._proc.stdout):  # type: ignore[arg-type]
-                    if not self.running:
-                        break
                     size   = len(data)
                     result = parse_frame(data)
                     proto  = result[0]
@@ -728,7 +727,12 @@ class _DumpcapCapture:
         self._thread.start()
 
     def stop(self) -> None:
-        self.running = False
+        # Don't flip `running` here — the reader thread still has data sitting
+        # flushed-but-unread in the pipe (dumpcap buffers its output, so a
+        # burst captured seconds ago may only just be arriving). Terminating
+        # the process closes the pipe once dumpcap exits; the reader's `for`
+        # loop drains whatever is still in flight and sets `running = False`
+        # itself in its `finally` block once truly done.
         if self._proc:
             try:
                 self._proc.terminate()
@@ -749,6 +753,22 @@ _win_start: float = time.monotonic()
 
 _session_protos: set = set()   # protocol names seen at any point this session
 
+# Cumulative per-protocol byte totals across the whole run, never reset by
+# window rotation (unlike _cur/_disp). The live view only ever shows a
+# rolling window's rate, so without this there is nothing to report when a
+# live capture ends — a bursty protocol's total traffic for the session
+# would be unrecoverable once its last window rotated out.
+_session_stats: StatsMap = defaultdict(lambda: defaultdict(int))
+
+# Sparse unicast protocols (MMS report bursts, DNP3/IEC104/Modbus polls, …) can
+# go quiet for many rotation windows between exchanges. Without this, a
+# protocol's row disappears the instant its window empties out, even though
+# it was captured moments ago — easy to mistake for "not detected". Keep the
+# last non-empty window per protocol around so its row stays visible (marked
+# idle) until the next exchange refreshes it.
+_last_active:    StatsMap         = {}
+_last_active_at: Dict[str, float] = {}
+
 _total_packets = 0
 _total_bytes   = 0
 _start_time    = time.monotonic()
@@ -762,6 +782,10 @@ def _rotate_window() -> None:
         _win_dur   = max(now - _win_start, 0.001)
         _win_start = now
         _cur       = defaultdict(lambda: defaultdict(int))
+        for p, keys in _disp.items():
+            if keys:
+                _last_active[p]    = keys
+                _last_active_at[p] = now
 
 
 def _on_packet(pkt) -> None:
@@ -769,8 +793,10 @@ def _on_packet(pkt) -> None:
     data = bytes(pkt)
     size = len(data)
     proto, vlan, cos, redund, sv_appid, sv_svid, sv_noasdu, sv_confrev, sv_sim = parse_frame(data)
+    key = (vlan, cos, redund, sv_appid, sv_svid, sv_noasdu, sv_confrev, sv_sim)
     with _lock:
-        _cur[proto][(vlan, cos, redund, sv_appid, sv_svid, sv_noasdu, sv_confrev, sv_sim)] += size
+        _cur[proto][key]           += size
+        _session_stats[proto][key] += size
         _session_protos.add(proto)
         _total_packets += 1
         _total_bytes   += size
@@ -855,10 +881,13 @@ def _build_panel(iface: str, enabled: frozenset) -> Panel:
     is folded into the aggregated "Other" row.
     """
     with _lock:
-        snap    = {p: dict(keys) for p, keys in _disp.items()}
-        win_dur = _win_dur
-        t_pkts  = _total_packets
-        t_bytes = _total_bytes
+        snap       = {p: dict(keys) for p, keys in _disp.items()}
+        last_snap  = {p: dict(keys) for p, keys in _last_active.items()}
+        last_at    = dict(_last_active_at)
+        win_dur    = _win_dur
+        t_pkts     = _total_packets
+        t_bytes    = _total_bytes
+    now = time.monotonic()
 
     table = Table(
         box=box.SIMPLE_HEAVY,
@@ -881,7 +910,23 @@ def _build_panel(iface: str, enabled: frozenset) -> Panel:
     grand_total = 0.0
 
     for proto in PROTO_ORDER:
-        if proto not in enabled or proto not in snap:
+        if proto not in enabled:
+            continue
+        if proto not in snap:
+            # No traffic this window — if it was active recently, keep its row
+            # visible (idle) rather than letting it vanish between bursts.
+            if proto in last_snap:
+                idle_s = now - last_at.get(proto, now)
+                for vlan, cos, redund, appid, svid, noasdu, confrev, sim in sorted(last_snap[proto].keys()):
+                    redund_text = Text(redund, style="bold magenta" if redund != "-" else "dim")
+                    sim_text    = Text(sim,    style="bold red"     if sim == "yes" else "dim")
+                    table.add_row(
+                        Text(proto, style="dim italic"), Text(vlan, style="dim"), Text(cos, style="dim"),
+                        redund_text, Text(appid, style="dim"), Text(svid, style="dim"),
+                        Text(noasdu, style="dim"), Text(confrev, style="dim"), sim_text,
+                        Text("0.000 bit/s", style="dim"),
+                        Text(f"idle {idle_s:.0f}s", style="dim"),
+                    )
             continue
         sub_rows = [
             (vlan, cos, redund, appid, svid, noasdu, confrev, sim, bcount / win_dur)
@@ -979,6 +1024,17 @@ PROTOCOLS WITH DETAILED BREAKDOWN (off by default — see --goose/--sv/--rgoose/
   IEC104         TCP port 2404     – IEC 60870-5-104, unicast
   Modbus TCP     TCP port 502      – Modbus over TCP, unicast
 
+  NOTE: unlike GOOSE/SV, these four are unicast and often bursty rather than
+  continuous — e.g. an MMS report-by-exception client may only exchange a
+  handful of packets every 10-60 s (its RCB integrity period), with nothing
+  in between. A short capture (the 10 s default) can easily start and stop
+  without ever landing on one of those bursts, in which case the row simply
+  won't appear — that's a quiet capture window, not a detection failure. Once
+  seen, a row is kept on screen showing "idle Ns" (bits/s reset to 0) until
+  the next burst, rather than disappearing between windows. For unattended
+  monitoring of these protocols, prefer a longer --duration (or -d 0 to run
+  until stopped) so the capture reliably spans at least one full cycle.
+
 EVERYTHING ELSE — always aggregated into a single "Other" row
   R-SV, GSSE, NTP, LLDP, RSTP, ARP, IPv4, IPv6, and any unclassified
   traffic are still recognized internally but have no per-protocol row;
@@ -1031,7 +1087,10 @@ EXAMPLES
     )
     parser.add_argument(
         "-d", "--duration", type=float, default=10.0, metavar="SEC",
-        help="Stop after this many seconds; 0 = run forever  (default: 10)",
+        help="Stop after this many seconds; 0 = run forever  (default: 10). "
+             "Use a longer value (or 0) when watching --mms/--dnp3/--iec104/"
+             "--modbus — they're bursty, not continuous, and a short capture "
+             "can miss their traffic entirely; see the note below",
     )
     parser.add_argument(
         "-s", "--speed", type=int, default=100, metavar="MBPS",
@@ -1251,6 +1310,21 @@ EXAMPLES
         while is_running():
             live.update(_build_panel(label, enabled_protos))
             time.sleep(min(0.5, args.refresh / 2))
+
+    # The live view above only ever shows a rolling window's rate — a bursty
+    # protocol (MMS report bursts, DNP3/IEC104/Modbus polls) can easily have
+    # zero traffic in whatever window happened to be current when the run
+    # ended, making it look like nothing was ever seen. Print one more panel
+    # built from the whole session's accumulated totals, same as --pcap does
+    # for a file, so "how much MMS did this capture actually have" has an
+    # answer even when its rate was 0 in the final window.
+    with _lock:
+        session_snap = {p: dict(keys) for p, keys in _session_stats.items()}
+    session_dur = max(time.monotonic() - _start_time, 0.001)
+    _disp    = session_snap
+    _win_dur = session_dur
+    console.print()
+    console.print(_build_panel(f"{label}  — session total ({session_dur:.1f}s)", enabled_protos))
 
 
 if __name__ == "__main__":

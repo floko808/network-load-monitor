@@ -172,8 +172,6 @@ class _CaptureEngine:
             last_flush = time.monotonic()
             try:
                 for data in _iter_pcap(self._proc.stdout):  # type: ignore[arg-type]
-                    if not self.running:
-                        break
                     result = parse_frame(data)
                     batch.append((result[0], result[1:], len(data)))
                     now = time.monotonic()
@@ -192,8 +190,13 @@ class _CaptureEngine:
         self._thread.start()
 
     def stop(self) -> None:
-        self.running = False
+        # For the dumpcap backend, don't flip `running` here — dumpcap buffers
+        # its output, so a burst captured seconds ago may still be sitting
+        # flushed-but-unread in the pipe. Terminating closes the pipe once
+        # dumpcap exits; the reader thread drains what's still in flight and
+        # sets `running = False` itself once truly done.
         if self._sniffer:
+            self.running = False
             try:
                 self._sniffer.stop()
             except Exception:
@@ -260,6 +263,12 @@ class MonitorApp:
 
         self._lock         = threading.Lock()
         self._cur: dict    = defaultdict(lambda: defaultdict(int))
+        # Cumulative per-protocol totals across the whole run, never reset by
+        # the 1 s refresh tick (unlike _cur). Without this, a bursty protocol
+        # (MMS report bursts, DNP3/IEC104/Modbus polls) that happens to be
+        # idle in the last window looks like it was never captured once the
+        # run stops — there's nothing to report its session total from.
+        self._session_stats: dict = defaultdict(lambda: defaultdict(int))
         self._win_start    = time.monotonic()
         self._total_pkts   = 0
         self._total_bytes  = 0
@@ -271,6 +280,12 @@ class MonitorApp:
         self._font: Optional[tkfont.Font] = None
         self._last_snap: dict = {}
         self._last_win_dur    = 1.0
+        # Sparse unicast protocols (MMS report bursts, DNP3/IEC104/Modbus
+        # polls, …) can go quiet for many refresh ticks between exchanges.
+        # Keep the last non-empty window per protocol so its row stays
+        # visible (marked idle) instead of vanishing until the next exchange.
+        self._last_active_snap: dict = {}
+        self._last_active_at:   dict = {}
 
         self._build_ui()
         self._populate_interfaces()
@@ -414,13 +429,17 @@ class MonitorApp:
         self._total_pkts   = 0
         self._total_bytes  = 0
         self._start_time   = time.monotonic()
-        self._cur          = defaultdict(lambda: defaultdict(int))
-        self._win_start    = time.monotonic()
+        self._cur              = defaultdict(lambda: defaultdict(int))
+        self._session_stats    = defaultdict(lambda: defaultdict(int))
+        self._win_start        = time.monotonic()
+        self._last_active_snap = {}
+        self._last_active_at   = {}
 
         def on_batch(batch) -> None:
             with self._lock:
                 for proto, key, size in batch:
-                    self._cur[proto][key] += size
+                    self._cur[proto][key]           += size
+                    self._session_stats[proto][key] += size
                     self._total_pkts += 1
                     self._total_bytes += size
 
@@ -449,16 +468,46 @@ class MonitorApp:
         if self._dur_timer:
             self._dur_timer.cancel()
             self._dur_timer = None
-        if self._engine:
-            self._engine.stop()
-            self._engine = None
         if self._after_id:
             self.root.after_cancel(self._after_id)
             self._after_id = None
+        engine = self._engine
+        self._engine = None
         self._btn_start.config(state="normal")
         self._btn_stop.config(state="disabled")
         self._iface_cb.config(state="readonly")
+        if engine is None:
+            self._status.set("Stopped.")
+            return
+        self._status.set("Stopping — draining capture…")
+        engine.stop()
+        self._await_drain(engine)
+
+    def _await_drain(self, engine: "_CaptureEngine", tries: int = 0) -> None:
+        """Wait for the capture backend to finish draining already-flushed
+        data before showing the final session-total summary. dumpcap buffers
+        its output, so a burst captured moments ago may still be in flight —
+        redrawing immediately on Stop would under-report it. Bounded to ~5s
+        so a backend that fails to exit can't hang the UI indefinitely."""
+        if engine.running and tries < 50:
+            self.root.after(100, lambda: self._await_drain(engine, tries + 1))
+            return
+        self._show_session_summary()
         self._status.set("Stopped.")
+
+    def _show_session_summary(self) -> None:
+        """The live table only ever shows a rolling window's rate — a bursty
+        protocol (MMS report bursts, DNP3/IEC104/Modbus polls) can easily
+        have zero traffic in whatever window happened to be current when the
+        run stopped, making it look like nothing was ever seen. Replace the
+        table with the whole session's accumulated totals, same as loading a
+        pcap file does, so "how much MMS did this run actually have" has an
+        answer even when its rate was 0 in the final window."""
+        now = time.monotonic()
+        with self._lock:
+            snap = {p: dict(keys) for p, keys in self._session_stats.items()}
+        dur = max(now - self._start_time, 0.001) if self._start_time else 1.0
+        self._redraw(snap, dur)
 
     # ── offline pcap/pcapng file loading ────────────────────────────────────
 
@@ -478,6 +527,8 @@ class MonitorApp:
             return
 
         self._on_stop()   # a static file load replaces any live capture in progress
+        self._last_active_snap = {}
+        self._last_active_at   = {}
         self._link_bytes_s = speed * 1_000_000 / 8
         self._status.set(f"Loading {path} …")
         self._btn_start.config(state="disabled")
@@ -535,7 +586,7 @@ class MonitorApp:
             t_pkts          = self._total_pkts
             t_bytes         = self._total_bytes
 
-        self._redraw(snap, win_dur)
+        self._redraw(snap, win_dur, live=True)
 
         if self._start_time is not None:
             up   = int(now - self._start_time)
@@ -561,9 +612,16 @@ class MonitorApp:
         the next capture tick (or doing nothing if nothing has run yet)."""
         self._redraw(self._last_snap, self._last_win_dur)
 
-    def _redraw(self, snap: dict, win_dur: float) -> None:
+    def _redraw(self, snap: dict, win_dur: float, live: bool = False) -> None:
         self._last_snap    = snap
         self._last_win_dur = win_dur
+        now = time.monotonic()
+
+        if live:
+            for p, keys in snap.items():
+                if keys:
+                    self._last_active_snap[p] = keys
+                    self._last_active_at[p]   = now
 
         for item in self._tree.get_children():
             self._tree.delete(item)
@@ -572,7 +630,17 @@ class MonitorApp:
         grand_total = 0.0
 
         for proto in PROTO_ORDER:
-            if proto not in enabled or proto not in snap:
+            if proto not in enabled:
+                continue
+            if proto not in snap:
+                # No traffic this window — if it was active recently, keep its
+                # row visible (idle) rather than letting it vanish between bursts.
+                if proto in self._last_active_snap:
+                    idle_s = now - self._last_active_at.get(proto, now)
+                    for vlan, cos, redund, appid, svid, noasdu, confrev, sim in sorted(self._last_active_snap[proto].keys()):
+                        vals = (proto, vlan, cos, redund, appid, svid, noasdu, confrev,
+                                sim, "0.000 bit/s", f"idle {idle_s:.0f}s")
+                        self._tree.insert("", "end", values=vals, tags=("subtot",))
                 continue
             sub = [
                 (vlan, cos, redund, appid, svid, noasdu, confrev, sim, cnt / win_dur)

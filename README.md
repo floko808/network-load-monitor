@@ -4,7 +4,7 @@ Captures raw Ethernet frames on a network interface (or reads a `.pcap`/`.pcapng
 file) and classifies traffic by protocol, VLAN, and redundancy scheme
 (HSR/PRP), reporting throughput and link-load percentage per protocol.
 
-Version 0.0.2 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
+Version 0.0.3 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
 dependency; see [THIRD_PARTY_LICENSES](#third-party-licenses) below).
 
 Developed by [Fabio Barros](https://github.com/floko808) with
@@ -44,10 +44,10 @@ you can confirm a copy hasn't been altered in transit. Recompute with
 
 | File | Version | SHA256 |
 |---|---|---|
-| `monitor.py` | 0.0.2 | `8e8af8ed488698862a9e98d2329013fe818a66dc669a50ef4e3a22ad6f829cff` |
-| `monitor_gui.py` | 0.0.2 | `69947c51ec1958d5f7a5820f4d04d4af4e08a09f35eef93c703340d525a5a2b5` |
-| `network-monitor.exe` | 0.0.2 | `a1096432290a6dc6ddcbc07f562180e3a481afe4127dc905a95e08953c2c58a5` |
-| `network-monitor-gui.exe` | 0.0.2 | `e1236b95946e649ba09ea248ce95e40f8e7c79958abe79eb8513b54a42da9052` |
+| `monitor.py` | 0.0.3 | `13ed0310016a2ba3b5c21eb0348093b0bfa4056664aa88c91896638e86d318ec` |
+| `monitor_gui.py` | 0.0.3 | `98991ce8d93b18969e41e3ce5fb4755c533bf9e9c7ef1edfd88c938e27e0f889` |
+| `network-monitor.exe` | 0.0.3 | `07d7700d7dbd8364c567ba58e9f33fa5d00a7041a220983ffca503ad6ad04cdd` |
+| `network-monitor-gui.exe` | 0.0.3 | `dc62e934ca982f3960366467b040553ff01e030e392bf1c9cb955e5a5701bd37` |
 
 > These hashes must be regenerated any time the corresponding file changes —
 > they are not automatically kept in sync.
@@ -69,6 +69,18 @@ For these four, the well-known port is only a hint — a matching port with a
 payload that doesn't parse as that protocol's actual framing (TPKT magic
 bytes, DNP3 sync bytes, IEC104 APCI start byte, or Modbus MBAP header) is
 left classified as "IPv4"/"Other" rather than assumed to be that protocol.
+
+Unlike GOOSE/SV, these four are unicast and often bursty rather than
+continuous — e.g. an MMS client polling by report-by-exception may only
+exchange a handful of packets every 10-60 s (its report control block's
+integrity period), with nothing in between. A short capture (10 s by
+default) can start and stop without ever landing on one of those bursts, in
+which case its row simply won't appear that run — that's a quiet capture
+window, not a detection failure. Once a burst is seen, its row stays on
+screen (bits/s reset to 0, labeled `idle Ns`) until the next one, rather
+than disappearing the instant traffic pauses. For unattended monitoring of
+these protocols, use a longer duration (or `0` / `∞` to run until stopped)
+so the capture reliably spans at least one full cycle.
 
 By default all eight are folded into a single "Other" line — pass
 `--goose`/`--sv`/`--rgoose`/`--ptp`/`--mms`/`--dnp3`/`--iec104`/`--modbus`
@@ -115,7 +127,9 @@ bundled into a single executable.
        Administrators only"** to capture without elevation.
 4. In the window:
    - Pick a **network interface** from the dropdown.
-   - Set **link speed** (Mb/s) and **duration** (`0` = run forever).
+   - Set **link speed** (Mb/s) and **duration** (`0` = run forever). When
+     watching MMS / DNP3 / IEC104 / Modbus TCP, prefer a longer duration (or
+     `0`) — see the note above about their bursty traffic pattern.
    - Click **▶ Start** / **■ Stop**.
    - Tick the **Detail** checkboxes (GOOSE / Sampled Values / R-GOOSE / PTP /
      MMS / DNP3 / IEC104 / Modbus TCP) to break any of them out of the
@@ -219,6 +233,8 @@ positional arguments:
 options:
   -h, --help          show this help message and exit
   -d, --duration SEC  Stop after this many seconds; 0 = run forever (default: 10)
+                       (use a longer value when watching --mms/--dnp3/--iec104/
+                       --modbus — see note above on their bursty traffic)
   -s, --speed MBPS    Link speed in Mb/s used for load % calculation (default: 100)
   -r, --refresh SEC   Statistics window / display refresh in seconds (default: 1.0)
   -l, --list          List available network interfaces and exit
