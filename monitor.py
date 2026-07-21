@@ -111,7 +111,7 @@ def _resolve_iface(name: str, mapping: Dict[str, str]) -> Optional[str]:
 
 # ── about / version ───────────────────────────────────────────────────────────
 SOFTWARE_NAME = "IEC 61850 Network Load Monitor"
-__version__   = "0.0.3"
+__version__   = "0.0.4"
 LICENSE_NAME  = "GPL-2.0-only"
 
 
@@ -806,6 +806,34 @@ def _on_packet(pkt) -> None:
 
 _PCAP_PROGRESS_EVERY = 2000   # packets between progress_cb calls
 
+# Magic numbers for the capture formats this tool actually reads. Checked
+# explicitly — on the file's real header bytes, not its extension or a
+# "Files of type" dropdown choice — before scapy gets anywhere near the
+# content. This also has the effect of refusing gzip-wrapped input (magic
+# 0x1f8b): scapy's PcapReader would otherwise transparently inflate it, and
+# since inflating happens before any size is known, a small malicious .gz
+# could expand into an arbitrarily large stream. Plain pcap/pcapng have no
+# such amplification (the bytes read equal the bytes on disk), so this
+# closes the one place a "capture file" could act as a decompression bomb
+# without limiting legitimate large captures.
+_PCAP_MAGICS = {
+    b"\xa1\xb2\xc3\xd4", b"\xd4\xc3\xb2\xa1",   # classic pcap, micro-second timestamps
+    b"\xa1\xb2\x3c\x4d", b"\x4d\x3c\xb2\xa1",   # classic pcap, nano-second timestamps
+}
+_PCAPNG_MAGIC = b"\x0a\x0d\x0d\x0a"
+
+
+def _check_capture_header(path: str) -> None:
+    """Reject anything whose first 4 bytes don't match a real pcap/pcapng
+    magic number, before it's handed to scapy for parsing.
+    """
+    with open(path, "rb") as f:
+        magic = f.read(4)
+    if magic not in _PCAP_MAGICS and magic != _PCAPNG_MAGIC:
+        raise ValueError(
+            "not a pcap/pcapng capture file (unrecognized header) — refusing to load"
+        )
+
 
 def load_pcap_stats(
     path: str, progress_cb: Optional[Callable[[int, int, float], None]] = None,
@@ -815,6 +843,9 @@ def load_pcap_stats(
     where duration_s spans the file's first to last packet timestamp (used in
     place of a live window duration for the rate/% columns).
 
+    Validates the file's magic bytes itself (see _check_capture_header) before
+    reading further, rather than relying only on scapy's own header parsing.
+
     scapy's PcapReader builds a full Packet object per frame, so large files
     take a while (tens of seconds for 100k+ packets); progress_cb(pkts,
     total_bytes, percent), if given, is called every _PCAP_PROGRESS_EVERY
@@ -822,6 +853,8 @@ def load_pcap_stats(
     is actually progressing. percent is based on the reader's position in the
     file on disk, not on decoded packet bytes.
     """
+    _check_capture_header(path)
+
     stats: StatsMap = defaultdict(lambda: defaultdict(int))
     pkts = total_bytes = 0
     t_min: Optional[float] = None

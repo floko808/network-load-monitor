@@ -4,7 +4,7 @@ Captures raw Ethernet frames on a network interface (or reads a `.pcap`/`.pcapng
 file) and classifies traffic by protocol, VLAN, and redundancy scheme
 (HSR/PRP), reporting throughput and link-load percentage per protocol.
 
-Version 0.0.3 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
+Version 0.0.4 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
 dependency; see [THIRD_PARTY_LICENSES](#third-party-licenses) below).
 
 Developed by [Fabio Barros](https://github.com/floko808) with
@@ -52,10 +52,10 @@ you can confirm a copy hasn't been altered in transit. Recompute with
 
 | File | Version | SHA256 |
 |---|---|---|
-| `monitor.py` | 0.0.3 | `13ed0310016a2ba3b5c21eb0348093b0bfa4056664aa88c91896638e86d318ec` |
-| `monitor_gui.py` | 0.0.3 | `98991ce8d93b18969e41e3ce5fb4755c533bf9e9c7ef1edfd88c938e27e0f889` |
-| `network-monitor.exe` | 0.0.3 | `07d7700d7dbd8364c567ba58e9f33fa5d00a7041a220983ffca503ad6ad04cdd` |
-| `network-monitor-gui.exe` | 0.0.3 | `dc62e934ca982f3960366467b040553ff01e030e392bf1c9cb955e5a5701bd37` |
+| `monitor.py` | 0.0.4 | `69622b68002bf56dc237f65e3af0bcec21def4f3e17cc3d78023176aebe8af54` |
+| `monitor_gui.py` | 0.0.4 | `98991ce8d93b18969e41e3ce5fb4755c533bf9e9c7ef1edfd88c938e27e0f889` |
+| `network-monitor.exe` | 0.0.4 | `3647c6b4a258469fb5be841eedf17644bce21eb9b618b51ee19e3135414526b5` |
+| `network-monitor-gui.exe` | 0.0.4 | `0b2121f47976af6246691d76af40046af664a811997394b39968318c20854446` |
 
 > These hashes must be regenerated any time the corresponding file changes —
 > they are not automatically kept in sync.
@@ -145,6 +145,10 @@ bundled into a single executable.
    - **Open pcap/pcapng...** loads a capture file from disk instead of
      capturing live (a progress readout appears in the status bar while a
      large file loads — this can take tens of seconds for very large files).
+     The file picker's "Capture files" filter is only a convenience — what's
+     actually accepted is checked by content: the first 4 bytes must be a
+     real pcap/pcapng magic number, regardless of extension, or the load is
+     refused with an error instead of being passed to the parser.
    - **Export CSV** saves the current table.
    - **Help → About** shows the software name, version and license.
 

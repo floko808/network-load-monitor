@@ -9,6 +9,20 @@ fixes.
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-07-21
+
+### Security
+- `--pcap` / "Open pcap/pcapng..." now validates a file's magic bytes itself
+  before handing it to scapy, instead of relying only on scapy's own header
+  parsing. In particular this explicitly refuses gzip-wrapped input, which
+  scapy would otherwise transparently inflate — since inflation happens
+  before any size is known, a small malicious `.gz` could otherwise expand
+  into an arbitrarily large stream. Plain pcap/pcapng are read byte-for-byte
+  with no such amplification, so this closes the one decompression-bomb-style
+  vector without limiting legitimate large captures. The GUI's file-picker
+  extension filter was always cosmetic (it has an "All files" option); the
+  real gate is this header check, run regardless of what the file is named.
+
 ### Changed
 - README: added a second CLI screenshot (`docs/screenshots/cli-screenshot-unicast.svg`),
   rendered against a real capture with actual MMS/DNP3/Modbus TCP traffic, so
@@ -97,7 +111,8 @@ fixes.
   `network-monitor-gui.exe`, alongside running from source on Linux.
 - CLI and GUI screenshots added to the README.
 
-[Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/floko808/network-load-monitor/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/floko808/network-load-monitor/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/floko808/network-load-monitor/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/floko808/network-load-monitor/releases/tag/v0.0.1
