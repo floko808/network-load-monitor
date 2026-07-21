@@ -20,11 +20,19 @@ Two front ends share the same capture/parsing engine (`monitor.py`):
 ## Screenshots
 
 **CLI** — real output, rendered directly from `monitor.py`'s own display code
-against a real capture (`--pcap --goose --sv --rgoose --ptp` — this capture
-carries no MMS/DNP3/IEC104/Modbus TCP traffic, so those detailed rows aren't
-pictured; pass `--all` to break out every protocol a capture actually has):
+against a real capture (`--pcap --goose --sv --rgoose --ptp`):
 
 ![CLI screenshot](docs/screenshots/cli-screenshot.svg)
+
+**CLI — MMS / DNP3 / Modbus TCP** — same rendering code, a different real
+capture (`--pcap --mms --dnp3 --modbus`) that actually carries this unicast
+traffic. These three have no VLAN/redundancy/AppID/SVID framing of their own
+(that's GOOSE/SV/R-GOOSE territory), so those columns read `-`; only
+protocol, bits/s and % are meaningful for them. IEC104 isn't pictured here
+only because this particular capture didn't have any — pass `--iec104` (or
+`--all`) against a capture that does:
+
+![CLI screenshot — MMS/DNP3/Modbus](docs/screenshots/cli-screenshot-unicast.svg)
 
 **GUI** — a recreation matching the real widget layout exactly (interface
 picker, link speed/duration, Start/Stop, the protocol-detail checkboxes,

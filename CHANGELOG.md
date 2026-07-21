@@ -9,6 +9,11 @@ fixes.
 
 ## [Unreleased]
 
+### Changed
+- README: added a second CLI screenshot (`docs/screenshots/cli-screenshot-unicast.svg`),
+  rendered against a real capture with actual MMS/DNP3/Modbus TCP traffic, so
+  those detailed rows are no longer undocumented by example.
+
 ## [0.0.3] - 2026-07-20
 
 ### Fixed
