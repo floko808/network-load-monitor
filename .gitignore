@@ -16,3 +16,7 @@ dist/
 
 # Debug/scratch script, not part of the shipped product
 debug_rgoose.py
+
+# Local test captures — real network data and often tens of MB, kept out of
+# the (public) repo; used for manual --pcap testing only.
+test-captures/
