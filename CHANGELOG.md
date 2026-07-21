@@ -11,6 +11,14 @@ fixes.
 
 ## [0.0.4] - 2026-07-21
 
+### Fixed
+- CLI printed the results table twice at the end of a live capture — the
+  live view's final frame, followed by a separate "session total" panel
+  underneath it. The live table's own last update now shows the session
+  total directly, so there's a single table that refreshes at the
+  configured `--refresh` rate throughout and settles on the session total
+  when the capture stops, instead of two.
+
 ### Security
 - `--pcap` / "Open pcap/pcapng..." now validates a file's magic bytes itself
   before handing it to scapy, instead of relying only on scapy's own header

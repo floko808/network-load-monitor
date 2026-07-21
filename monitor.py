@@ -1344,20 +1344,20 @@ EXAMPLES
             live.update(_build_panel(label, enabled_protos))
             time.sleep(min(0.5, args.refresh / 2))
 
-    # The live view above only ever shows a rolling window's rate — a bursty
-    # protocol (MMS report bursts, DNP3/IEC104/Modbus polls) can easily have
-    # zero traffic in whatever window happened to be current when the run
-    # ended, making it look like nothing was ever seen. Print one more panel
-    # built from the whole session's accumulated totals, same as --pcap does
-    # for a file, so "how much MMS did this capture actually have" has an
-    # answer even when its rate was 0 in the final window.
-    with _lock:
-        session_snap = {p: dict(keys) for p, keys in _session_stats.items()}
-    session_dur = max(time.monotonic() - _start_time, 0.001)
-    _disp    = session_snap
-    _win_dur = session_dur
-    console.print()
-    console.print(_build_panel(f"{label}  — session total ({session_dur:.1f}s)", enabled_protos))
+        # The rolling window above only ever shows its own rate — a bursty
+        # protocol (MMS report bursts, DNP3/IEC104/Modbus polls) can easily
+        # have zero traffic in whatever window happened to be current when
+        # the run ended, making it look like nothing was ever seen. Swap in
+        # the whole session's accumulated totals for one final update of the
+        # same table, same as --pcap does for a file, so "how much MMS did
+        # this capture actually have" has an answer even when its rate was 0
+        # in the final window — without printing a second table underneath.
+        with _lock:
+            session_snap = {p: dict(keys) for p, keys in _session_stats.items()}
+        session_dur = max(time.monotonic() - _start_time, 0.001)
+        _disp    = session_snap
+        _win_dur = session_dur
+        live.update(_build_panel(f"{label}  — session total ({session_dur:.1f}s)", enabled_protos))
 
 
 if __name__ == "__main__":
