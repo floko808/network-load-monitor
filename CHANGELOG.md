@@ -9,6 +9,19 @@ fixes.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-07-29
+
+### Added
+- Traffic filtering by VLAN, redundancy (HSR/PRP), AppID, GOOSE ID, and SVID.
+  CLI: `--vlan`, `--redundancy`, `--appid`, `--goid`, `--svid` (comma-separated
+  for multiple values, OR'd within a flag and AND'd across flags); matching
+  frames are dropped before they're counted, so totals and the session
+  summary reflect only the filtered traffic. GUI: the Protocol/VLAN/
+  Redundancy/AppID/SVID-GOID column headers each get an Excel-style filter
+  dropdown, adjustable live during a capture or after it has stopped (or
+  after loading a pcap file) without needing to recapture or reload, plus a
+  "Clear Filters" button.
+
 ## [0.0.4] - 2026-07-21
 
 ### Fixed
@@ -119,7 +132,8 @@ fixes.
   `network-monitor-gui.exe`, alongside running from source on Linux.
 - CLI and GUI screenshots added to the README.
 
-[Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/floko808/network-load-monitor/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/floko808/network-load-monitor/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/floko808/network-load-monitor/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/floko808/network-load-monitor/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/floko808/network-load-monitor/compare/v0.0.1...v0.0.2

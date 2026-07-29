@@ -4,7 +4,7 @@ Captures raw Ethernet frames on a network interface (or reads a `.pcap`/`.pcapng
 file) and classifies traffic by protocol, VLAN, and redundancy scheme
 (HSR/PRP), reporting throughput and link-load percentage per protocol.
 
-Version 0.0.4 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
+Version 0.0.5 — License: [GPL-2.0-only](LICENSE) (required by the `scapy`
 dependency; see [THIRD_PARTY_LICENSES](#third-party-licenses) below).
 
 Developed by [Fabio Barros](https://github.com/floko808) with
@@ -52,10 +52,10 @@ you can confirm a copy hasn't been altered in transit. Recompute with
 
 | File | Version | SHA256 |
 |---|---|---|
-| `monitor.py` | 0.0.4 | `69622b68002bf56dc237f65e3af0bcec21def4f3e17cc3d78023176aebe8af54` |
-| `monitor_gui.py` | 0.0.4 | `98991ce8d93b18969e41e3ce5fb4755c533bf9e9c7ef1edfd88c938e27e0f889` |
-| `network-monitor.exe` | 0.0.4 | `3647c6b4a258469fb5be841eedf17644bce21eb9b618b51ee19e3135414526b5` |
-| `network-monitor-gui.exe` | 0.0.4 | `0b2121f47976af6246691d76af40046af664a811997394b39968318c20854446` |
+| `monitor.py` | 0.0.5 | `bd5a13d158020781ff5db354b1766ed1dd4497544e68a8164356cd8db521faba` |
+| `monitor_gui.py` | 0.0.5 | `c5da8d15cf89ece119abada4306492aa841c90d75f98bab634989323cc133a16` |
+| `network-monitor.exe` | 0.0.5 | `a97d8074f16652fcf0ef3b2bd77fcb8007a0976339be735fe6307599a9441a60` |
+| `network-monitor-gui.exe` | 0.0.5 | `f50403079824b402a037ff2a8d77dd919857c4df53dc59e129ae19a94cbc3212` |
 
 > These hashes must be regenerated any time the corresponding file changes —
 > they are not automatically kept in sync.
@@ -237,6 +237,8 @@ python3 monitor_gui.py
 usage: monitor.py [-h] [-d SEC] [-s MBPS] [-r SEC] [-l] [-V] [--pcap FILE]
                    [--goose] [--sv] [--rgoose] [--ptp]
                    [--mms] [--dnp3] [--iec104] [--modbus] [--all]
+                   [--vlan ID[,ID...]] [--redundancy VALUE[,VALUE...]]
+                   [--appid HEX[,HEX...]] [--goid ID[,ID...]] [--svid ID[,ID...]]
                    [interface]
 
 positional arguments:
@@ -263,7 +265,18 @@ options:
   --modbus            Show detailed Modbus TCP breakdown (off by default; TCP port 502)
   --all               Show detailed breakdown for every supported protocol
                        (equivalent to --goose --sv --rgoose --ptp --mms --dnp3 --iec104 --modbus)
+  --vlan ID[,ID...]   Only include frames tagged with one of these VLAN IDs
+  --redundancy V[,V...]  Only include frames matching hsr/prp/none, or a
+                       specific lane (hsr-a/hsr-b/prp-a/prp-b)
+  --appid HEX[,HEX...]   Only include frames with this AppID (hex)
+  --goid ID[,ID...]   Only include frames with this GOOSE ID (goID/gocbRef)
+  --svid ID[,ID...]   Only include Sampled Values frames with this SVID
 ```
+
+Filter flags drop non-matching frames before they're counted at all — they
+never appear in the table, the totals, or the session summary. Comma-separated
+values within one flag are OR'd; different flags are AND'd together; `--goid`
+and `--svid` filter the same SVID/GOID column and are OR'd if both are given.
 
 Examples:
 
@@ -276,7 +289,10 @@ python3 monitor.py --list                 # show available interfaces
 python3 monitor.py eth0 --goose --sv      # break out GOOSE and SV detail
 python3 monitor.py eth0 --mms --dnp3 --iec104 --modbus  # unicast SCADA/substation protocols
 python3 monitor.py eth0 --all             # break out every supported protocol
+python3 monitor.py eth0 --vlan 11 --appid 0x4041  # only VLAN 11, AppID 0x4041
+python3 monitor.py eth0 --redundancy prp  # only PRP-redundant traffic (either lane)
 python3 monitor.py --pcap capture.pcapng --goose --ptp
+python3 monitor.py --pcap capture.pcapng --vlan 10,20 --goid myGOOSE1
 ```
 
 Table columns: **Protocol**, **VLAN** (802.1Q/QinQ id), **CoS** (802.1Q PCP),
@@ -284,6 +300,12 @@ Table columns: **Protocol**, **VLAN** (802.1Q/QinQ id), **CoS** (802.1Q PCP),
 **noASDU/stNum**, **confRev**, **Sim** (simulation flag), **bits/s**, **%**
 (of configured link speed). A `Sum <protocol>` row appears when a protocol
 spans multiple VLAN/redundancy combinations; **TOTAL** is the grand sum.
+
+In the GUI, the Protocol/VLAN/Redundancy/AppID/SVID-GOID column headers each
+have an Excel-style filter dropdown — click a header to check/uncheck which
+values to show. Filters can be changed live during a capture or after it has
+stopped (or after loading a pcap file); a "▾" on the header marks an active
+filter, and "Clear Filters" resets all of them.
 
 ---
 

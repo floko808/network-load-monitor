@@ -103,6 +103,9 @@ _COLS = (
 # Columns that expand to fill extra window width; all others stay content-wide.
 _COLS_STRETCH = frozenset({"Protocol", "SVID/GOID"})
 
+# Columns with an Excel-style per-value dropdown filter on their header.
+_FILTERABLE_COLS = ("Protocol", "VLAN", "Redundancy", "AppID", "SVID/GOID")
+
 _COL_A = {
     "Protocol": "w",  "VLAN": "center", "CoS": "center",
     "Redundancy": "w", "AppID": "center", "SVID/GOID": "w",
@@ -287,6 +290,12 @@ class MonitorApp:
         self._last_active_snap: dict = {}
         self._last_active_at:   dict = {}
 
+        # Excel-style per-column filters: None means "show all"; a set means
+        # "only these values". _seen_values accumulates every distinct value
+        # ever observed this run so the dropdowns have something to show.
+        self._col_filter: Dict[str, Optional[set]] = {c: None for c in _FILTERABLE_COLS}
+        self._seen_values: Dict[str, set] = {c: set() for c in _FILTERABLE_COLS}
+
         self._build_ui()
         self._populate_interfaces()
 
@@ -358,6 +367,9 @@ class MonitorApp:
         ttk.Separator(bar2, orient="vertical").pack(side="left", fill="y", padx=12)
         ttk.Button(bar2, text="Open pcap/pcapng...", command=self._open_pcap).pack(side="left", padx=3)
 
+        ttk.Separator(bar2, orient="vertical").pack(side="left", fill="y", padx=12)
+        ttk.Button(bar2, text="Clear Filters", command=self._clear_all_filters).pack(side="left", padx=3)
+
         # ── table ─────────────────────────────────────────────────────────
         frm = ttk.Frame(self.root)
         frm.pack(fill="both", expand=True, padx=6, pady=(2, 0))
@@ -368,7 +380,10 @@ class MonitorApp:
         self._bold_font = tkfont.Font(font=self._font, weight="bold")
         for col in _COLS:
             init_w = self._font.measure(col) + 20
-            self._tree.heading(col, text=col)
+            if col in _FILTERABLE_COLS:
+                self._tree.heading(col, text=col, command=lambda c=col: self._open_filter_popup(c))
+            else:
+                self._tree.heading(col, text=col)
             self._tree.column(col, width=init_w, minwidth=30,
                               anchor=_COL_A[col], stretch=(col in _COLS_STRETCH))
 
@@ -434,6 +449,9 @@ class MonitorApp:
         self._win_start        = time.monotonic()
         self._last_active_snap = {}
         self._last_active_at   = {}
+        self._col_filter       = {c: None for c in _FILTERABLE_COLS}
+        self._seen_values      = {c: set() for c in _FILTERABLE_COLS}
+        self._update_header_labels()
 
         def on_batch(batch) -> None:
             with self._lock:
@@ -529,6 +547,9 @@ class MonitorApp:
         self._on_stop()   # a static file load replaces any live capture in progress
         self._last_active_snap = {}
         self._last_active_at   = {}
+        self._col_filter    = {c: None for c in _FILTERABLE_COLS}
+        self._seen_values   = {c: set() for c in _FILTERABLE_COLS}
+        self._update_header_labels()
         self._link_bytes_s = speed * 1_000_000 / 8
         self._status.set(f"Loading {path} …")
         self._btn_start.config(state="disabled")
@@ -612,10 +633,123 @@ class MonitorApp:
         the next capture tick (or doing nothing if nothing has run yet)."""
         self._redraw(self._last_snap, self._last_win_dur)
 
+    def _update_seen_values(self, snap: dict) -> None:
+        """Grow the per-column set of distinct values ever observed this run,
+        used to populate each Excel-style filter dropdown's checklist."""
+        for proto, keys in snap.items():
+            self._seen_values["Protocol"].add(proto)
+            for vlan, cos, redund, appid, svid, noasdu, confrev, sim in keys.keys():
+                self._seen_values["VLAN"].add(vlan)
+                self._seen_values["Redundancy"].add(redund)
+                self._seen_values["AppID"].add(appid)
+                self._seen_values["SVID/GOID"].add(svid)
+
+    def _passes_filter(self, proto: str, vlan: str, redund: str, appid: str, svid: str) -> bool:
+        f = self._col_filter
+        if f["Protocol"]   is not None and proto   not in f["Protocol"]:   return False
+        if f["VLAN"]       is not None and vlan    not in f["VLAN"]:       return False
+        if f["Redundancy"] is not None and redund  not in f["Redundancy"]: return False
+        if f["AppID"]      is not None and appid   not in f["AppID"]:      return False
+        if f["SVID/GOID"]  is not None and svid    not in f["SVID/GOID"]:  return False
+        return True
+
+    def _update_header_labels(self) -> None:
+        """Mark filtered columns with a funnel-style '▾' suffix, Excel-style,
+        so an active filter is visible without opening its dropdown."""
+        for col in _FILTERABLE_COLS:
+            text = f"{col} ▾" if self._col_filter[col] is not None else col
+            self._tree.heading(col, text=text)
+
+    def _clear_all_filters(self) -> None:
+        self._col_filter = {c: None for c in _FILTERABLE_COLS}
+        self._update_header_labels()
+        self._redraw(self._last_snap, self._last_win_dur)
+
+    def _header_x(self, col: str) -> int:
+        x = self._tree.winfo_rootx()
+        for c in _COLS:
+            if c == col:
+                break
+            x += self._tree.column(c, "width")
+        return x
+
+    def _open_filter_popup(self, col: str) -> None:
+        """Excel-style autofilter: a checklist of every distinct value seen
+        so far in this column, applied immediately on OK/Clear without
+        waiting for the next capture tick — same as the Detail toggles."""
+        values = sorted(self._seen_values.get(col, set()))
+        if not values:
+            return
+
+        current  = self._col_filter.get(col)
+        selected = set(current) if current is not None else set(values)
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Filter: {col}")
+        win.transient(self.root)
+        win.resizable(False, False)
+        win.geometry(f"+{self._header_x(col)}+{self._tree.winfo_rooty() + 30}")
+
+        frm = ttk.Frame(win, padding=8)
+        frm.pack(fill="both", expand=True)
+
+        item_vars: Dict[str, tk.BooleanVar] = {}
+        all_var = tk.BooleanVar(value=len(selected) == len(values))
+
+        def _toggle_all() -> None:
+            v = all_var.get()
+            for var in item_vars.values():
+                var.set(v)
+
+        ttk.Checkbutton(frm, text="(Select All)", variable=all_var,
+                        command=_toggle_all).pack(anchor="w")
+        ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=4)
+
+        # Scrollable checklist — AppID/SVID/GOID columns can accumulate many
+        # distinct values over a long capture.
+        list_h   = min(len(values), 15) * 22 + 4
+        canvas   = tk.Canvas(frm, width=260, height=list_h, highlightthickness=0)
+        vsb      = ttk.Scrollbar(frm, orient="vertical", command=canvas.yview)
+        inner    = ttk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=vsb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        for v in values:
+            var = tk.BooleanVar(value=v in selected)
+            item_vars[v] = var
+            ttk.Checkbutton(inner, text=v, variable=var).pack(anchor="w")
+
+        btns = ttk.Frame(win, padding=(8, 0, 8, 8))
+        btns.pack(fill="x")
+
+        def _apply() -> None:
+            chosen = {v for v, var in item_vars.items() if var.get()}
+            self._col_filter[col] = None if chosen == set(values) else chosen
+            win.destroy()
+            self._update_header_labels()
+            self._redraw(self._last_snap, self._last_win_dur)
+
+        def _clear() -> None:
+            self._col_filter[col] = None
+            win.destroy()
+            self._update_header_labels()
+            self._redraw(self._last_snap, self._last_win_dur)
+
+        ttk.Button(btns, text="OK", command=_apply).pack(side="left")
+        ttk.Button(btns, text="Clear", command=_clear).pack(side="left", padx=4)
+        ttk.Button(btns, text="Cancel", command=win.destroy).pack(side="left")
+
+        win.grab_set()
+
     def _redraw(self, snap: dict, win_dur: float, live: bool = False) -> None:
         self._last_snap    = snap
         self._last_win_dur = win_dur
         now = time.monotonic()
+
+        self._update_seen_values(snap)
 
         if live:
             for p, keys in snap.items():
@@ -626,11 +760,14 @@ class MonitorApp:
         for item in self._tree.get_children():
             self._tree.delete(item)
 
-        enabled     = self._enabled_protos()
-        grand_total = 0.0
+        enabled       = self._enabled_protos()
+        proto_filter  = self._col_filter["Protocol"]
+        grand_total   = 0.0
 
         for proto in PROTO_ORDER:
             if proto not in enabled:
+                continue
+            if proto_filter is not None and proto not in proto_filter:
                 continue
             if proto not in snap:
                 # No traffic this window — if it was active recently, keep its
@@ -638,6 +775,8 @@ class MonitorApp:
                 if proto in self._last_active_snap:
                     idle_s = now - self._last_active_at.get(proto, now)
                     for vlan, cos, redund, appid, svid, noasdu, confrev, sim in sorted(self._last_active_snap[proto].keys()):
+                        if not self._passes_filter(proto, vlan, redund, appid, svid):
+                            continue
                         vals = (proto, vlan, cos, redund, appid, svid, noasdu, confrev,
                                 sim, "0.000 bit/s", f"idle {idle_s:.0f}s")
                         self._tree.insert("", "end", values=vals, tags=("subtot",))
@@ -646,7 +785,10 @@ class MonitorApp:
                 (vlan, cos, redund, appid, svid, noasdu, confrev, sim, cnt / win_dur)
                 for (vlan, cos, redund, appid, svid, noasdu, confrev, sim), cnt
                 in sorted(snap[proto].items())
+                if self._passes_filter(proto, vlan, redund, appid, svid)
             ]
+            if not sub:
+                continue
             proto_total  = sum(r for *_, r in sub)
             grand_total += proto_total
 
@@ -663,11 +805,14 @@ class MonitorApp:
                 self._tree.insert("", "end", values=vals, tags=("subtot",))
 
         # All protocols that aren't individually enabled aggregated into "Other"
+        # (still subject to the Protocol/VLAN/Redundancy/AppID/SVID filters).
         other_rate = sum(
             cnt / win_dur
             for p, keys in snap.items()
             if p not in enabled
-            for cnt in keys.values()
+            and (proto_filter is None or p in proto_filter)
+            for (vlan, cos, redund, appid, svid, noasdu, confrev, sim), cnt in keys.items()
+            if self._passes_filter(p, vlan, redund, appid, svid)
         )
         grand_total += other_rate
         if other_rate > 0:

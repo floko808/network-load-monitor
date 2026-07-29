@@ -111,7 +111,7 @@ def _resolve_iface(name: str, mapping: Dict[str, str]) -> Optional[str]:
 
 # ── about / version ───────────────────────────────────────────────────────────
 SOFTWARE_NAME = "IEC 61850 Network Load Monitor"
-__version__   = "0.0.4"
+__version__   = "0.0.5"
 LICENSE_NAME  = "GPL-2.0-only"
 
 
@@ -384,6 +384,96 @@ def parse_frame(data: bytes) -> Tuple[str, str, str, str, str, str, str, str, st
     vlan_label = ", ".join(str(v)   for v, _ in vlan_tags) if vlan_tags else "-"
     cos_label  = ", ".join(str(pcp) for _, pcp in vlan_tags) if vlan_tags else "-"
     return proto, vlan_label, cos_label, redund or "-", sv_appid, sv_svid, sv_noasdu, sv_confrev, sv_sim
+
+
+# ── traffic filter ────────────────────────────────────────────────────────────
+
+def _redundancy_tokens(redund: str) -> frozenset:
+    """Expand a redundancy label into the set of filter tokens it satisfies:
+    'HSR-A' -> {'hsr', 'hsr-a'}; 'PRP-B' -> {'prp', 'prp-b'}; '-' -> {'none'}."""
+    if redund == "-":
+        return frozenset({"none"})
+    return frozenset({redund.split("-")[0].lower(), redund.lower()})
+
+
+class FrameFilter:
+    """Predicate over a classified frame's VLAN / redundancy / AppID /
+    SVID-GOID fields. Each attribute is either None (no constraint on that
+    field) or a frozenset of allowed tokens — multiple values within one
+    field are OR'd together, while the fields themselves are AND'd, e.g.
+    vlans={"10", "20"} and appids={"0x4041"} matches VLAN 10 OR 20, AND
+    AppID 0x4041.
+    """
+
+    __slots__ = ("vlans", "redundancy", "appids", "svids")
+
+    def __init__(self, vlans=None, redundancy=None, appids=None, svids=None) -> None:
+        self.vlans      = vlans
+        self.redundancy = redundancy
+        self.appids     = appids
+        self.svids      = svids
+
+    def is_empty(self) -> bool:
+        return not (self.vlans or self.redundancy or self.appids or self.svids)
+
+    def matches(self, vlan: str, redund: str, appid: str, svid: str) -> bool:
+        if self.vlans is not None:
+            tags = set(vlan.split(", ")) if vlan != "-" else set()
+            if not tags & self.vlans:
+                return False
+        if self.redundancy is not None:
+            if not _redundancy_tokens(redund) & self.redundancy:
+                return False
+        if self.appids is not None and appid not in self.appids:
+            return False
+        if self.svids is not None and svid.upper() not in self.svids:
+            return False
+        return True
+
+    def summary(self) -> str:
+        """Short human-readable form for the panel footer, e.g. 'vlan=10,20 appid=0x4041'."""
+        parts = []
+        if self.vlans:      parts.append("vlan="       + ",".join(sorted(self.vlans)))
+        if self.redundancy: parts.append("redundancy=" + ",".join(sorted(self.redundancy)))
+        if self.appids:     parts.append("appid="      + ",".join(sorted(self.appids)))
+        if self.svids:      parts.append("svid/goid="  + ",".join(sorted(self.svids)))
+        return " ".join(parts)
+
+
+_VALID_REDUNDANCY_TOKENS = frozenset({
+    "hsr", "prp", "none", "hsr-a", "hsr-b", "prp-a", "prp-b",
+})
+
+
+def _build_filter(args: argparse.Namespace) -> FrameFilter:
+    """Turn the --vlan/--redundancy/--appid/--goid/--svid CLI flags into a
+    FrameFilter, exiting with a clear message on invalid input rather than
+    letting a bad value surface as a confusing empty capture."""
+    vlans = frozenset(v.strip() for v in args.vlan.split(",")) if args.vlan else None
+
+    redundancy = None
+    if args.redundancy:
+        redundancy = frozenset(v.strip().lower() for v in args.redundancy.split(","))
+        bad = redundancy - _VALID_REDUNDANCY_TOKENS
+        if bad:
+            sys.exit(
+                f"Error: --redundancy invalid value(s) {sorted(bad)} — expected one of "
+                f"{sorted(_VALID_REDUNDANCY_TOKENS)}"
+            )
+
+    appids = None
+    if args.appid:
+        try:
+            appids = frozenset(f"0x{int(v.strip(), 16):04X}" for v in args.appid.split(","))
+        except ValueError:
+            sys.exit(f"Error: --appid expects hex values, e.g. 0x4041 (got {args.appid!r})")
+
+    svids = None
+    if args.goid or args.svid:
+        parts = (args.goid.split(",") if args.goid else []) + (args.svid.split(",") if args.svid else [])
+        svids = frozenset(v.strip().upper() for v in parts)
+
+    return FrameFilter(vlans, redundancy, appids, svids)
 
 
 def _looks_like_mms(payload: bytes) -> bool:
@@ -672,9 +762,11 @@ class _DumpcapCapture:
     Works without root when the user is in the 'wireshark' group.
     """
 
-    def __init__(self, iface: str, dumpcap_path: str = "dumpcap") -> None:
+    def __init__(self, iface: str, dumpcap_path: str = "dumpcap",
+                 filt: Optional["FrameFilter"] = None) -> None:
         self._iface        = iface
         self._dumpcap_path = dumpcap_path
+        self._filt          = filt or FrameFilter()
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self.running  = False
@@ -704,6 +796,8 @@ class _DumpcapCapture:
                     result = parse_frame(data)
                     proto  = result[0]
                     key    = result[1:]
+                    if not self._filt.matches(key[0], key[2], key[3], key[4]):
+                        continue
                     local_cur[proto][key] += size
                     local_protos.add(proto)
                     local_pkts  += 1
@@ -751,6 +845,8 @@ _disp: StatsMap = {}
 _win_dur: float = 1.0       # actual duration of the last completed window
 _win_start: float = time.monotonic()
 
+_active_filter: FrameFilter = FrameFilter()   # set by main() from --vlan/--redundancy/--appid/--goid/--svid
+
 _session_protos: set = set()   # protocol names seen at any point this session
 
 # Cumulative per-protocol byte totals across the whole run, never reset by
@@ -793,6 +889,8 @@ def _on_packet(pkt) -> None:
     data = bytes(pkt)
     size = len(data)
     proto, vlan, cos, redund, sv_appid, sv_svid, sv_noasdu, sv_confrev, sv_sim = parse_frame(data)
+    if not _active_filter.matches(vlan, redund, sv_appid, sv_svid):
+        return
     key = (vlan, cos, redund, sv_appid, sv_svid, sv_noasdu, sv_confrev, sv_sim)
     with _lock:
         _cur[proto][key]           += size
@@ -837,6 +935,7 @@ def _check_capture_header(path: str) -> None:
 
 def load_pcap_stats(
     path: str, progress_cb: Optional[Callable[[int, int, float], None]] = None,
+    filt: Optional["FrameFilter"] = None,
 ) -> Tuple[StatsMap, float, int, int]:
     """Read every frame from a pcap or pcapng file and classify it exactly like
     a live capture would. Returns (stats, duration_s, packet_count, byte_count),
@@ -866,6 +965,8 @@ def load_pcap_stats(
             data   = bytes(pkt)
             size   = len(data)
             result = parse_frame(data)
+            if filt is not None and not filt.matches(result[1], result[3], result[4], result[5]):
+                continue
             stats[result[0]][result[1:]] += size
             pkts        += 1
             total_bytes += size
@@ -1027,11 +1128,12 @@ def _build_panel(iface: str, enabled: frozenset) -> Panel:
         f"link [green]{LINK_MBPS} Mb/s[/green]  "
         f"[dim]{datetime.now():%H:%M:%S}[/dim]"
     )
+    filter_note = f"  filter {_active_filter.summary()}" if not _active_filter.is_empty() else ""
     footer = (
         f"[dim]packets {t_pkts:,}  "
         f"total {_fmt_bytes(float(t_bytes))}  "
         f"uptime {h:02d}:{m:02d}:{s:02d}  "
-        f"window {win_dur*1000:.0f} ms[/dim]"
+        f"window {win_dur*1000:.0f} ms{filter_note}[/dim]"
     )
     return Panel(table, title=title, subtitle=footer, border_style="blue")
 
@@ -1040,6 +1142,7 @@ def _build_panel(iface: str, enabled: frozenset) -> Panel:
 
 def main() -> None:
     global LINK_MBPS, LINK_BYTES_S, _start_time, _disp, _win_dur, _total_packets, _total_bytes
+    global _active_filter
 
     parser = argparse.ArgumentParser(
         prog="monitor.py",
@@ -1102,6 +1205,22 @@ CAPTURE BACKENDS (tried in order)
   raw socket  Requires root or CAP_NET_RAW
   dumpcap     No root needed if user is in the 'wireshark' group
 
+TRAFFIC FILTERS (--vlan/--redundancy/--appid/--goid/--svid)
+  Frames that don't match are dropped before they're counted at all — they
+  never appear in the table, the packet/byte totals, or the final session
+  summary. Comma-separated values within one flag are OR'd (e.g. --vlan
+  10,20 matches either); different flags are AND'd together (e.g. --vlan 11
+  --appid 0x4041 requires both). --goid and --svid filter the same SVID/GOID
+  column and are OR'd if both given, since a frame is either GOOSE or SV,
+  never both.
+    --vlan 11                 VLAN ID(s), matched against any tag in a
+                               QinQ stack, not just the outermost
+    --redundancy hsr           hsr / prp / none, or a specific lane
+    --redundancy prp-a         (hsr-a, hsr-b, prp-a, prp-b)
+    --appid 0x4041             AppID, hex, with or without the 0x prefix
+    --goid myGOOSE1             GOOSE ID (goID/gocbRef)
+    --svid MU01                 Sampled Values stream ID
+
 EXAMPLES
   python3 monitor.py                        # eth0, 10 s, 100 Mb/s
   python3 monitor.py eth0 -d 30             # capture for 30 seconds
@@ -1111,7 +1230,10 @@ EXAMPLES
   python3 monitor.py eth0 --goose --sv      # break out GOOSE and SV detail
   python3 monitor.py eth0 --mms --dnp3 --iec104 --modbus  # unicast SCADA/substation protocols
   python3 monitor.py eth0 --all             # break out every supported protocol
+  python3 monitor.py eth0 --vlan 11 --appid 0x4041  # only VLAN 11, AppID 0x4041
+  python3 monitor.py eth0 --redundancy prp  # only PRP-redundant traffic (either lane)
   python3 monitor.py --pcap capture.pcapng --goose --ptp
+  python3 monitor.py --pcap capture.pcapng --vlan 10,20 --goid myGOOSE1
 """,
     )
     parser.add_argument(
@@ -1185,7 +1307,33 @@ EXAMPLES
         help="Show detailed breakdown for every supported protocol "
              "(equivalent to --goose --sv --rgoose --ptp --mms --dnp3 --iec104 --modbus)",
     )
+    parser.add_argument(
+        "--vlan", metavar="ID[,ID...]",
+        help="Only include frames tagged with one of these VLAN IDs "
+             "(comma-separated for multiple, OR'd together), e.g. --vlan 11 or --vlan 10,20",
+    )
+    parser.add_argument(
+        "--redundancy", metavar="VALUE[,VALUE...]",
+        help="Only include frames matching this redundancy state: hsr, prp, none, "
+             "or a specific lane (hsr-a/hsr-b/prp-a/prp-b). Comma-separated for multiple.",
+    )
+    parser.add_argument(
+        "--appid", metavar="HEX[,HEX...]",
+        help="Only include GOOSE/SV/R-GOOSE frames with this AppID (hex, e.g. 0x4041 or 4041). "
+             "Comma-separated for multiple.",
+    )
+    parser.add_argument(
+        "--goid", metavar="ID[,ID...]",
+        help="Only include frames whose GOOSE ID (goID/gocbRef) matches. Comma-separated "
+             "for multiple; combines with --svid (they filter the same SVID/GOID column).",
+    )
+    parser.add_argument(
+        "--svid", metavar="ID[,ID...]",
+        help="Only include Sampled Values frames whose SVID matches. Comma-separated for "
+             "multiple; combines with --goid (they filter the same SVID/GOID column).",
+    )
     args = parser.parse_args()
+    _active_filter = _build_filter(args)
 
     enabled_protos: frozenset = FEATURED_PROTOS if args.all else frozenset(
         name for name, flag in (
@@ -1230,7 +1378,7 @@ EXAMPLES
                         detail=f"{pkts:,} packets ({_fmt_bytes(float(total_bytes))})",
                     )
 
-                stats, duration, pkts, total_bytes = load_pcap_stats(args.pcap, _on_progress)
+                stats, duration, pkts, total_bytes = load_pcap_stats(args.pcap, _on_progress, _active_filter)
         except Exception as exc:
             console.print(f"[bold red]Error:[/bold red] failed to read {args.pcap}: {exc}")
             sys.exit(1)
@@ -1293,7 +1441,7 @@ EXAMPLES
 
     # ── start capture ─────────────────────────────────────────────────────
     if use_dumpcap:
-        cap = _DumpcapCapture(iface, dumpcap_path)
+        cap = _DumpcapCapture(iface, dumpcap_path, _active_filter)
         try:
             cap.start()
         except Exception as exc:
