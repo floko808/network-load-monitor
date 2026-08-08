@@ -9,6 +9,9 @@ fixes.
 
 ## [Unreleased]
 
+Nothing further is planned — the project is archived as of 2026-08-08 with
+v0.0.5 as its final release. See the note at the top of the README.
+
 ## [0.0.5] - 2026-07-29
 
 ### Added

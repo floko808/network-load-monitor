@@ -1,5 +1,10 @@
 # IEC 61850 Network Load Monitor
 
+> **Archived — no longer maintained.** Development stopped at v0.0.5. The code
+> works as documented below and the repository is kept read-only for reference;
+> issues and pull requests will not be acted on. [SKILL.md](SKILL.md) is a
+> complete build spec for anyone who wants to rebuild or fork this from scratch.
+
 Captures raw Ethernet frames on a network interface (or reads a `.pcap`/`.pcapng`
 file) and classifies traffic by protocol, VLAN, and redundancy scheme
 (HSR/PRP), reporting throughput and link-load percentage per protocol.
