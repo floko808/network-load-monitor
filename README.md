@@ -50,7 +50,7 @@ environment this was built in — but every label, column and control matches
 
 ## File integrity
 
-SHA256 of each source file and its corresponding compiled Windows binary, so
+SHA256 of each source file and its corresponding compiled binary, so
 you can confirm a copy hasn't been altered in transit. Recompute with
 `sha256sum <file>` (Linux/macOS) or `CertUtil -hashfile <file> SHA256`
 (Windows) and compare.
@@ -61,6 +61,13 @@ you can confirm a copy hasn't been altered in transit. Recompute with
 | `monitor_gui.py` | 0.0.5 | `c5da8d15cf89ece119abada4306492aa841c90d75f98bab634989323cc133a16` |
 | `network-monitor.exe` | 0.0.5 | `a97d8074f16652fcf0ef3b2bd77fcb8007a0976339be735fe6307599a9441a60` |
 | `network-monitor-gui.exe` | 0.0.5 | `f50403079824b402a037ff2a8d77dd919857c4df53dc59e129ae19a94cbc3212` |
+| `network-monitor-linux-x86_64` | 0.0.5 | `16c5b2bde66087e43282b736d560e4da552e0e8aa3e71dd03432ac1af070e068` |
+| `network-monitor-gui-linux-x86_64` | 0.0.5 | `136b268a2b5ad0cb48c25d1a7b330454f9db2a1df2dc674d0355657c7b8a8163` |
+
+PyInstaller embeds build timestamps, so rebuilding from the same source does
+not reproduce these hashes byte-for-byte — they identify the binaries
+published on the [v0.0.5 release](https://github.com/floko808/network-load-monitor/releases/tag/v0.0.5),
+not the build inputs.
 
 > These hashes must be regenerated any time the corresponding file changes —
 > they are not automatically kept in sync.
@@ -114,11 +121,11 @@ detected and shown as its own column regardless of which protocol flags are set.
 
 ## Which version should I use?
 
-| | Windows GUI | Windows CLI | Linux (python3) |
-|---|---|---|---|
-| Install needed | None (single `.exe`) | None (single `.exe`) | Python 3 + venv |
-| Best for | Point-and-click use | Scripting / remote / headless boxes | Development, servers |
-| File | `dist/network-monitor-gui.exe` | `dist/network-monitor.exe` | `monitor.py` / `monitor_gui.py` |
+| | Windows GUI | Windows CLI | Linux binary | Linux (python3) |
+|---|---|---|---|---|
+| Install needed | None (single `.exe`) | None (single `.exe`) | None (single file) | Python 3 + venv |
+| Best for | Point-and-click use | Scripting / remote / headless boxes | Deploying to a box without Python | Development, servers |
+| File | `dist/network-monitor-gui.exe` | `dist/network-monitor.exe` | `dist/network-monitor[-gui]-linux-x86_64` | `monitor.py` / `monitor_gui.py` |
 
 ---
 
@@ -185,9 +192,50 @@ network-monitor.exe "Ethernet0" -d 30 -s 1000
 See [Command-line reference](#command-line-reference) below for every flag —
 it's identical between the compiled `.exe` and running `monitor.py` directly.
 
-## 3. GNU/Linux — running from source with python3
+## 3. GNU/Linux — compiled binaries
 
-On Linux there's no compiled binary; run the scripts directly with Python 3.
+No Python installation required — Python, scapy, rich and Tk are bundled into
+a single file each, exactly as on Windows:
+
+- `network-monitor-linux-x86_64` — terminal UI (CLI)
+- `network-monitor-gui-linux-x86_64` — desktop UI (GUI)
+
+```bash
+chmod +x network-monitor-linux-x86_64
+./network-monitor-linux-x86_64 --list          # show available interfaces
+sudo ./network-monitor-linux-x86_64 eth0 -d 30 # capture (see permissions below)
+```
+
+Every flag in the [command-line reference](#command-line-reference) works
+identically here and when running `monitor.py` directly.
+
+**Supported distributions.** The binaries are built inside a Debian 12
+container, so they run on Debian 12 (glibc 2.36), Ubuntu 24.04 (glibc 2.39),
+and any newer glibc-based distribution — glibc is backwards compatible, so
+building on the *oldest* supported target is what makes the newer ones work,
+not the other way round. Verified on Debian 12 and Ubuntu 24.04 (both front
+ends, live capture and `--pcap`). x86-64 only; there is no ARM build. Older
+releases (Debian 11, Ubuntu 22.04) are untested and may fail to start with a
+`GLIBC_2.3x not found` error — run from source there instead.
+
+**Capture permissions** are the same as for the source install — see the list
+at the end of the next section. The `dumpcap` fallback works with the
+binaries too.
+
+**The GUI needs a graphical session** (X11 or Wayland) *and* system fonts
+installed. It uses your distribution's fonts rather than bundling any, so a
+minimal/headless image with no fonts will fail at startup with a Tk
+`failed to allocate font` error; installing `fonts-dejavu-core` (or any font
+package) resolves it. Desktop installs already have this.
+
+Rebuild them yourself with [`build-linux.sh`](build-linux.sh) — see
+[Building the binaries yourself](#building-the-binaries-yourself).
+
+## 4. GNU/Linux — running from source with python3
+
+Run the scripts directly with Python 3 — the right choice for development,
+for non-x86-64 machines, or for distributions older than the compiled
+binaries support.
 **Use a virtual environment (`venv`)** so scapy/rich are installed in an
 isolated directory instead of polluting (or fighting version conflicts with)
 whatever Python packages the rest of the OS relies on:
@@ -314,11 +362,32 @@ filter, and "Clear Filters" resets all of them.
 
 ---
 
-## Building the Windows binaries yourself
+## Building the binaries yourself
 
-The compiled `.exe`s in `dist/` are built with [PyInstaller](https://pyinstaller.org/)
-from a Windows Python install (this project builds them via Wine on Linux;
-building natively on Windows works the same way):
+Both platforms use [PyInstaller](https://pyinstaller.org/) driven by the two
+`.spec` files in the repo (`network-monitor.spec`, `network-monitor-gui.spec`),
+which are shared between them.
+
+### Linux
+
+`build-linux.sh` does the whole thing; it only needs `docker` on the host:
+
+```bash
+./build-linux.sh     # writes dist/network-monitor[-gui]-linux-x86_64
+```
+
+It builds inside a `debian:12` container rather than on your machine because
+PyInstaller doesn't bundle glibc — the binary links against the *build*
+machine's glibc, and glibc is only backwards compatible. Building on a
+current distribution therefore yields binaries that won't start on Debian 12
+or Ubuntu 24.04. Building in the oldest supported container covers every
+newer target at once. Change `IMAGE` at the top of the script to build
+against a different baseline.
+
+### Windows
+
+Built from a Windows Python install (this project builds them via Wine on
+Linux; building natively on Windows works the same way):
 
 ```
 pip install pyinstaller
@@ -336,7 +405,7 @@ pyinstaller --onefile --name network-monitor-gui --noconsole --collect-all scapy
 This project is [GPL-2.0-only](LICENSE) because it directly imports and
 distributes `scapy`, which is GPL-2.0-only. Other bundled runtime
 dependencies (`rich`, `markdown-it-py`, `mdurl`, `Pygments`, the Python
-standard library, and PyInstaller's bootloader for the compiled `.exe`s) are
+standard library, and PyInstaller's bootloader for the compiled binaries) are
 all permissively licensed and impose no additional restriction.
 
 | Library | License | Direct / transitive | Used for |

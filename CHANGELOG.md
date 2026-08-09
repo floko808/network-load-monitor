@@ -12,6 +12,13 @@ fixes.
 Nothing further is planned — the project is archived as of 2026-08-08 with
 v0.0.5 as its final release. See the note at the top of the README.
 
+Post-archive packaging only, no code changes: Linux x86-64 binaries for the
+CLI and GUI were built from the v0.0.5 source and added to the existing
+v0.0.5 release, alongside `build-linux.sh` which reproduces them. They are
+built in a Debian 12 container so they run on Debian 12, Ubuntu 24.04 and
+newer glibc-based distributions; verified on both. Until now `dist/` held
+Windows `.exe`s only and the README said Linux had no compiled binary.
+
 ## [0.0.5] - 2026-07-29
 
 ### Added
