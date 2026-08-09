@@ -34,8 +34,9 @@ automation networks. It:
   terminal UI (`rich`) and a desktop UI (`tkinter`, stdlib only).
 - Runs without root by falling back from a raw AF_PACKET socket to
   Wireshark's `dumpcap` helper.
-- Packages to a single-file Windows `.exe` via PyInstaller for both front
-  ends, no Python install required on the target machine.
+- Packages to a single file per front end via PyInstaller — Windows `.exe`
+  and Linux x86-64 binary — with no Python install required on the target
+  machine.
 
 License: GPL-2.0-only (forced by depending on `scapy`, which is GPL-2.0).
 
@@ -760,11 +761,11 @@ for Tk's default exception handler to write to, so without this override a
 bug in any button/callback would silently do nothing instead of surfacing
 an error.
 
-## 12. Packaging (PyInstaller, Windows `.exe`)
+## 12. Packaging (PyInstaller)
 
-Two one-file builds, same dependency bundling, built from a Windows Python
-environment (or via Wine cross-build on Linux, as the original project
-does):
+Two one-file builds per platform, same dependency bundling throughout. The
+Windows builds come from a Windows Python environment (or via Wine
+cross-build on Linux, as the original project does):
 
 ```
 pyinstaller --onefile --name network-monitor --collect-all scapy --collect-all rich ^
@@ -791,6 +792,45 @@ Runtime capture-driver requirement on the target Windows machine regardless
 of which exe: Wireshark (bundles **Npcap**) must be installed, and either
 run the exe elevated or uncheck Npcap's "Restrict Npcap driver's access to
 Administrators only" during its install/reconfigure.
+
+### 12.1 Linux builds and the glibc constraint
+
+The Linux builds run the *same two spec files* — nothing platform-specific
+in them — but **must not** be built on the developer's own distribution.
+PyInstaller does not bundle glibc: the frozen binary dynamically links
+against whatever glibc the build machine has, and glibc guarantees only
+backwards compatibility. A binary built on glibc 2.42 therefore aborts at
+startup on a glibc 2.36 machine with `GLIBC_2.4x not found`, while the
+reverse works fine. The rule is to build against the **oldest** glibc you
+intend to support, which then covers every newer target for free — not to
+build on the newest and hope.
+
+The original project pins this to a `debian:12` container (glibc 2.36),
+driven by `build-linux.sh`, which covers Debian 12, Ubuntu 24.04 (glibc
+2.39) and anything newer. The container needs `python3-tk` present at
+*build* time or PyInstaller silently omits tkinter and the GUI binary dies
+on launch; `binutils` supplies the `objdump` PyInstaller uses to scan
+shared-library dependencies. Debian's system Python is externally managed,
+so the build installs into a venv. Verify a build by checking no symbol
+exceeds the baseline (`objdump -T <binary> | grep -o 'GLIBC_[0-9.]*' | sort
+-uV | tail -1`) — these come out at `GLIBC_2.14`.
+
+Two runtime notes specific to the Linux binaries, both of which look like
+build defects and are not:
+
+- **The GUI does not bundle fonts.** Tk uses the system's fonts, so on a
+  minimal image with no font package installed it fails at startup with
+  `failed to allocate font due to internal system font engine problem`.
+  Installing any font package (e.g. `fonts-dejavu-core`) resolves it; real
+  desktop installs already have one.
+- **No Npcap equivalent is needed.** Live capture uses the raw AF_PACKET
+  socket, so it needs root or `CAP_NET_RAW` on the binary, falling back to
+  `dumpcap` for users in the `wireshark` group (§ the backend fallback
+  above). Offline `--pcap` parsing needs no privileges.
+
+PyInstaller embeds build timestamps, so builds are not byte-reproducible;
+publish the hash of the artifact you actually ship rather than treating it
+as a property of the source.
 
 ## 13. Licensing
 
